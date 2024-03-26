@@ -7,12 +7,8 @@ use std::path::{Path, PathBuf};
 
 const EXITCODE_INVALID_ARGS: i32 = 1;
 const EXITCODE_UNSUPPORTED: i32 = 2;
+const EXITCODE_EXTERNAL_ISSUE: i32 = 3;
 const EXITCODE_UNKNOWN: i32 = 255;
-
-// const TRASHINFO_TEMPLATE: &str = "[Trash Info]
-// Path={}
-// DeletionDate={}
-// ";
 
 fn main() -> Result<(), Box<dyn Error>> {
     // parse the args
@@ -48,23 +44,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     // if !file_path.is_absolute() {
     // file_path = Path
     // }
-    let metadata = match file_path.metadata() {
-        Ok(m) => m,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                eprintln!("error: specified file doesn't exist");
-                std::process::exit(EXITCODE_INVALID_ARGS);
-            } else {
-                dbg!(e);
-                eprintln!("error: error while checking file");
-                std::process::exit(EXITCODE_UNKNOWN);
+
+    match file_path.try_exists() {
+        Ok(true) => {
+            if file_path.is_dir() {
+                eprintln!("error: directories not supported yet");
+                std::process::exit(EXITCODE_UNSUPPORTED);
             }
         }
-    };
-
-    if metadata.is_dir() {
-        eprintln!("error: directories not supported yet");
-        std::process::exit(EXITCODE_UNSUPPORTED);
+        Ok(false) => {
+            eprintln!("error: specified file doesn't exist");
+            std::process::exit(EXITCODE_INVALID_ARGS);
+        }
+        Err(e) => {
+            dbg!(e);
+            eprintln!("error: error while checking file");
+            std::process::exit(EXITCODE_UNKNOWN);
+        }
     }
 
     // get the trash dir
@@ -79,7 +75,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             None => "".to_string(),
         };
 
-    let trash_file_name = format!("{}/files/{}{}", trash_path.to_str().unwrap(), stripped_file_name, trash_file_suffix);
+    let trash_file_name = format!(
+        "{}/files/{}{}",
+        trash_path.to_str().unwrap(),
+        stripped_file_name,
+        trash_file_suffix
+    );
     let trash_file = Path::new(&trash_file_name);
 
     // add an .trashinfo entry
@@ -94,45 +95,38 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 // derive trash directory according to trash spec
 fn get_trash_dir(_: &String) -> Result<PathBuf, Box<dyn Error>> {
+    // if XDG_DATA_HOME is not defined, fallback to $HOME/.local/share
     let xdg_data_home = match env::var("XDG_DATA_HOME") {
-        Ok(val) => val,
+        Ok(v) => Path::new(&v).to_path_buf(),
         Err(_) => {
-            let home_dir = get_home_dir()?;
-            format!("{}/.local/share", home_dir)
+            let home_dir = match get_home_dir() {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("error: couldn't retrieve home directory location");
+                    std::process::exit(EXITCODE_EXTERNAL_ISSUE);
+                }
+            };
+
+            home_dir.join(".local").join("share")
         }
     };
 
     // todo: check if topdir exists if file is in a mounted drive
 
-    let trash_dir = format!("{}/Trash", xdg_data_home);
-    let trash_dir_clone = trash_dir.clone();
-    let trash_dir_path = Path::new(&trash_dir_clone);
-    match trash_dir_path.metadata() {
-        Ok(m) => {
-            // todo: info and files dirs might not exist
-            if m.is_dir() {
-                println!("debug: trash dir: {}", trash_dir_path.to_str().unwrap());
-                return Ok(trash_dir_path.to_path_buf());
-            } else {
-                return Err(Box::<dyn Error>::from("invalid Trash dir"));
-            }
-        }
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                println!("debug: trash dir not found - {}", trash_dir);
-                fs::create_dir(trash_dir.clone())?;
-                fs::create_dir(format!("{}/info", trash_dir))?;
-                fs::create_dir(format!("{}/files", trash_dir))?;
-            }
-        }
-    }
+    let trash_dir = xdg_data_home.join("Trash");
+    must_have_dir(&trash_dir)?;
 
-    println!("debug: trash dir: {}", trash_dir_path.to_str().unwrap());
-    Ok(trash_dir_path.to_path_buf())
+    println!("debug: trash dir: {}", trash_dir.to_str().unwrap());
+    Ok(trash_dir)
 }
 
-fn get_home_dir() -> Result<String, Box<dyn Error>> {
-    Ok(env::var("HOME")?)
+// retrieve os defined home directory. $HOME MUST be defined as of now.
+// todo: lookup passwd for home dir entry if $HOME isn't defined
+fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
+    let home_dir = env::var("HOME")?;
+    let home_path = Path::new(&home_dir);
+
+    Ok(home_path.to_path_buf())
 }
 
 // derive the suffix the trash file should have if duplicate files already exist in the trash
@@ -158,7 +152,10 @@ fn get_trash_file_suffix(trash_path: &str, file_name: &str) -> Option<i32> {
 fn create_info(trash_dir: &str, orig_file: &Path, trash_file: &Path) -> Result<(), Box<dyn Error>> {
     must_have_info_dir(trash_dir)?;
 
-    println!("debug: creating trashinfo: {}", trash_file.to_str().unwrap());
+    println!(
+        "debug: creating trashinfo: {}",
+        trash_file.to_str().unwrap()
+    );
     let info_entry_file_name = format!(
         "{}/info/{}.trashinfo",
         trash_dir,
@@ -181,7 +178,10 @@ DeletionDate={}
         full_file_path_str, deletion_date
     );
 
-    println!("debug: creating trashinfo file: {}", trash_file.to_str().unwrap());
+    println!(
+        "debug: creating trashinfo file: {}",
+        trash_file.to_str().unwrap()
+    );
     let mut file = match std::fs::File::create(info_entry_file_name) {
         Ok(v) => v,
         Err(e) => {
@@ -192,7 +192,10 @@ DeletionDate={}
         }
     };
 
-    println!("debug: writing to trashinfo: {}", trash_file.to_str().unwrap());
+    println!(
+        "debug: writing to trashinfo: {}",
+        trash_file.to_str().unwrap()
+    );
     match file.write_all(trashinfo.as_bytes()) {
         Ok(_) => println!("debug: trashinfo created"),
         Err(e) => {
@@ -226,9 +229,50 @@ fn must_have_files_dir(trash_path: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn move_to_trash(trash_path: &Path, orig_file: &Path, trash_file: &Path) -> Result<(), Box<dyn Error>> {
+fn move_to_trash(
+    trash_path: &Path,
+    orig_file: &Path,
+    trash_file: &Path,
+) -> Result<(), Box<dyn Error>> {
     must_have_files_dir(trash_path.to_str().unwrap())?;
-    println!("moving {} to {}", orig_file.to_str().unwrap(), trash_file.to_str().unwrap());
+    println!(
+        "moving {} to {}",
+        orig_file.to_str().unwrap(),
+        trash_file.to_str().unwrap()
+    );
     fs::rename(orig_file.to_str().unwrap(), trash_file.to_str().unwrap())?;
+    Ok(())
+}
+
+// make sure the specified path exists as a directory.
+// if the path doesn't exist, the directory is created.
+// if it exists and is not a directory, an Error is returned
+fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
+    match path.try_exists() {
+        Ok(true) => {
+            if !path.is_dir() {
+                Box::<dyn Error>::from(format!(
+                    "path exists but is not a directory: {}",
+                    path.to_str().unwrap()
+                ));
+            }
+        }
+        Ok(false) => {
+            fs::create_dir(path).map_err(|e| {
+                Box::<dyn Error>::from(format!(
+                    "error: cannot create directory: {}, {}",
+                    path.to_str().unwrap(),
+                    e,
+                ))
+            });
+        }
+        Err(_) => {
+            Box::<dyn Error>::from(format!(
+                "error: cannot verify directory exists: {}",
+                path.to_str().unwrap()
+            ));
+        }
+    };
+
     Ok(())
 }
