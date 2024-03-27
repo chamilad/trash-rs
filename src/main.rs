@@ -62,20 +62,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     trash_file.create_trashinfo()?;
     trash_file.trash()?;
 
-    // check if file with same name exists
-    // let stripped_file_name = abs_file.file_name().unwrap().to_str().unwrap();
-    // let trash_file = get_trash_file_name(&trash_home, stripped_file_name)?;
-
-    // add an .trashinfo entry
-    // create_info(
-    //     &trash_home,
-    //     &abs_file.to_str().unwrap(),
-    //     &trash_file.file_name().unwrap().to_str().unwrap(),
-    // )?;
-
-    // move the file
-    // move_to_trash(&abs_file, &trash_file)?;
-
     Ok(())
 }
 
@@ -142,17 +128,6 @@ impl TrashDirectory {
             .to_str()
             .unwrap();
 
-        // // check if filename isn't present at all
-        // {
-        //     let file = self.files.join(stripped_file_name);
-        //     let trashinfo = self.info.join(stripped_file_name);
-        //     if !file.exists() && !trashinfo.exists() {
-        //         trash_file.files_entry = Some(file);
-        //         trash_file.trashinfo_entry = Some(trashinfo);
-        //         return Ok(());
-        //     }
-        // }
-
         // if filename present, start testing for files with an integer suffix
         // following nautilus way of starting from 2
         // not sure what the ceiling is in nautilus, keeping 1024 for the moment
@@ -216,7 +191,6 @@ impl TrashFile {
             self.original_file.to_str().unwrap(),
         );
 
-        // let info_file = info_dir.join(format!("{}.trashinfo", trash_file_name));
         let info_entry = self.trashinfo_entry.as_ref().unwrap();
         if info_entry.exists() {
             return Err(Box::<dyn Error>::from("info entry already exists"));
@@ -288,22 +262,6 @@ fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
 
     Ok(home_path.to_path_buf())
 }
-
-// derive the suffix the trash file should have if duplicate files already exist in the trash
-// todo: consider if a file isn't in files dir, but an entry is in info dir, or file or dir by the same name exists
-// fn get_trash_file_name(trash_home: &PathBuf, file_name: &str) -> Result<PathBuf, Box<dyn Error>> {
-// }
-
-// // create trashinfo entry
-// fn create_info(
-//     trash_home: &PathBuf,
-//     orig_file_path: &str,
-//     trash_file_name: &str,
-// ) -> Result<(), Box<dyn Error>> {
-// }
-
-// fn move_to_trash(orig_file: &Path, trash_file: &Path) -> Result<(), Box<dyn Error>> {
-// }
 
 // make sure the specified path exists as a directory.
 // if the path doesn't exist, the directory is created.
