@@ -65,17 +65,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     let trash_dir = TrashDirectory::resolve_for_file(&abs_file)?;
     let mut trash_file = TrashFile::new(abs_file)?;
     trash_dir.generate_trash_entry_names(&mut trash_file)?;
-    trash_file.create_trashinfo()?;
+    trash_file.create_trashinfo(&trash_dir)?;
     trash_file.trash()?;
 
     Ok(())
 }
 
+enum TrashRootType {
+    Home,
+    TopDirAdmin,
+    TopDirUser,
+}
+
 struct TrashDirectory {
+    device: Device,
     home: PathBuf,
     files: PathBuf,
     info: PathBuf,
     dir_sizes: Option<PathBuf>,
+    root_type: TrashRootType,
 }
 
 struct TrashFile {
@@ -86,21 +94,19 @@ struct TrashFile {
 
 impl TrashDirectory {
     // derive trash directory according to trash spec
-    // todo: check if topdir exists if file is in a mounted drive
-    //   file to be trashed should be considered, so is a future parameter
-    // todo: map error instead of exiting here
     // todo: support expunge dir (not sure how to schedule job for permanent deletion)
     fn resolve_for_file(abs_file_path: &PathBuf) -> Result<TrashDirectory, Box<dyn Error>> {
         // check if the file is in a home mount
+        // "To be more precise, from a partition/device different from the one on which $XDG_DATA_HOME resides"
         let xdg_data_home = get_xdg_data_home()?;
         let mut file_dev = Device::for_path(abs_file_path)?;
-        // todo: not home dir, it's xdg_data_home to be precise
-        let home_dev = Device::for_path(&xdg_data_home)?;
+        let xdg_data_home_dev = Device::for_path(&xdg_data_home)?;
+        let trash_root_type: TrashRootType;
 
-        let trash_home = if file_dev.dev_num.dev_id == home_dev.dev_num.dev_id {
+        let trash_home = if file_dev.dev_num.dev_id == xdg_data_home_dev.dev_num.dev_id {
             println!(
                 "file is in home mount: {}, {}",
-                file_dev.dev_num.dev_id, home_dev.dev_num.dev_id
+                file_dev.dev_num.dev_id, xdg_data_home_dev.dev_num.dev_id
             );
 
             // For every user a “home trash” directory MUST be available. Its
@@ -110,15 +116,16 @@ impl TrashDirectory {
             // without any warnings or delays
             let trash_home = xdg_data_home.join("Trash");
             must_have_dir(&trash_home)?;
+            trash_root_type = TrashRootType::Home;
+
             trash_home
         } else {
-            // todo: path in trashinfo should be relative, SHOULD not support absolute path names in external mounts
             println!(
                 "file is in external mount: {}, {}",
-                file_dev.dev_num.dev_id, home_dev.dev_num.dev_id
+                file_dev.dev_num.dev_id, xdg_data_home_dev.dev_num.dev_id
             );
             file_dev.resolve_mount()?;
-            let top_dir = file_dev.mount_point.unwrap();
+            let top_dir = file_dev.mount_point.clone().unwrap();
 
             // check if $topdir/.Trash exist
             let admin_trash = top_dir.join(".Trash");
@@ -132,27 +139,27 @@ impl TrashDirectory {
                 _ => false,
             };
 
+            // user specific directory name
+            // todo: int test with a another user
+            let euid: u32;
+            unsafe {
+                euid = libc::geteuid();
+            }
+
             if admin_trash_available {
                 // $topdir/.Trash/$uid
-                let euid: u32;
-                unsafe {
-                    euid = libc::geteuid();
-                    println!("euid: {}", euid);
-                }
                 let user_trash_home = admin_trash.join(euid.to_string());
                 must_have_dir(&user_trash_home)?;
+
+                trash_root_type = TrashRootType::TopDirAdmin;
                 user_trash_home
             } else {
                 // $topdir/.Trash-uid
-                let user_trash_name: String;
-                unsafe {
-                    let euid = libc::geteuid();
-                    println!("euid: {}", euid);
-                    user_trash_name = format!(".Trash-{}", euid);
-                }
-
+                let user_trash_name = format!(".Trash-{}", euid);
                 let user_trash_home = top_dir.join(user_trash_name);
                 must_have_dir(&user_trash_home)?;
+
+                trash_root_type = TrashRootType::TopDirUser;
                 user_trash_home
             }
         };
@@ -165,6 +172,8 @@ impl TrashDirectory {
 
         println!("debug: trash dir: {}", trash_home.to_str().unwrap());
         let trash_dir = TrashDirectory {
+            device: file_dev,
+            root_type: trash_root_type,
             home: trash_home,
             files: files_dir,
             info: info_dir,
@@ -213,6 +222,7 @@ impl TrashDirectory {
 
         // suffix is before the file extension if present, even if it is a dir
         // ex: test.dir.ext would be test.2.dir.ext
+        // todo: tracing this in the gio source, looks like no ceiling, need more C
         if stripped_file_name.contains(".") {
             let components = stripped_file_name.splitn(2, ".").collect::<Vec<&str>>();
             return format!("{}.{}.{}", components[0], idx, components[1]);
@@ -235,7 +245,7 @@ impl TrashFile {
         })
     }
 
-    fn create_trashinfo(&self) -> Result<&PathBuf, Box<dyn Error>> {
+    fn create_trashinfo(&self, trash_dir: &TrashDirectory) -> Result<&PathBuf, Box<dyn Error>> {
         if self.files_entry == None || self.trashinfo_entry == None {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
@@ -244,6 +254,17 @@ impl TrashFile {
             "debug: creating trashinfo: {}",
             self.original_file.to_str().unwrap(),
         );
+
+        let relative_path: PathBuf;
+        // The system SHOULD support absolute pathnames only in the “home trash” directory, not in the directories under $topdir
+        let file_path_key = match trash_dir.root_type {
+            TrashRootType::Home => self.original_file.to_str().unwrap(),
+            _ => {
+                let trash_home_mt_point = trash_dir.device.mount_point.as_ref().unwrap();
+                relative_path = get_path_relative_to(&self.original_file, &trash_home_mt_point)?;
+                relative_path.to_str().unwrap()
+            },
+        };
 
         let info_entry = self.trashinfo_entry.as_ref().unwrap();
         if info_entry.exists() {
@@ -257,8 +278,7 @@ impl TrashFile {
 Path={}
 DeletionDate={}
 "#,
-            self.original_file.to_str().unwrap(),
-            deletion_date
+            file_path_key, deletion_date
         );
 
         println!(
@@ -365,6 +385,17 @@ fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
     };
 
     Ok(())
+}
+
+// returns a PathBuf of a relative path of child against parent
+fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+    // todo:
+    // sanitise for abs
+    // sanitise for actual child_of
+
+    let stripped = child.strip_prefix(parent)?;
+    // println!("stripped: {}", stripped.to_str().unwrap());
+    Ok(stripped.to_path_buf())
 }
 
 struct Device {
