@@ -1,14 +1,20 @@
 use chrono;
+use std::convert::TryInto;
 use std::env;
 use std::error::Error;
 use std::fs;
 use std::io::Write;
+use std::os::linux::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+use libc;
 
 const EXITCODE_INVALID_ARGS: i32 = 1;
 const EXITCODE_UNSUPPORTED: i32 = 2;
 const EXITCODE_EXTERNAL_ISSUE: i32 = 3;
 // const EXITCODE_UNKNOWN: i32 = 255;
+
+const FS_S_ISVTX: u32 = 0o1000;
 
 // todo: could use generics for path/pathbuf places
 
@@ -41,6 +47,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     //
     // dbg!(args);
 
+    // todo: block trashing the trash
+
     // get absolute path and check file exists
     let abs_file = match std::fs::canonicalize(file_path_arg) {
         Ok(v) => v,
@@ -56,7 +64,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::process::exit(EXITCODE_UNSUPPORTED);
     }
 
-    let trash_dir = TrashDirectory::resolve()?;
+    let trash_dir = TrashDirectory::resolve_for_file(&abs_file)?;
     let mut trash_file = TrashFile::new(abs_file)?;
     trash_dir.generate_trash_entry_names(&mut trash_file)?;
     trash_file.create_trashinfo()?;
@@ -83,33 +91,126 @@ impl TrashDirectory {
     // todo: check if topdir exists if file is in a mounted drive
     //   file to be trashed should be considered, so is a future parameter
     // todo: map error instead of exiting here
-    fn resolve() -> Result<TrashDirectory, Box<dyn Error>> {
-        // if XDG_DATA_HOME is not defined, fallback to $HOME/.local/share
-        let xdg_data_home = match env::var("XDG_DATA_HOME") {
-            Ok(v) => Path::new(&v).to_path_buf(),
-            Err(_) => {
-                let home_dir = match get_home_dir() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        eprintln!("error: couldn't retrieve home directory location");
-                        std::process::exit(EXITCODE_EXTERNAL_ISSUE);
-                    }
-                };
+    // todo: support expunge dir (not sure how to schedule job for permanent deletion)
+    fn resolve_for_file(abs_file_path: &PathBuf) -> Result<TrashDirectory, Box<dyn Error>> {
+        // check if the file is in a home mount
+        // let f_metadata = abs_file_path.metadata()?;
+        // let file_device_id = f_metadata.st_dev();
 
-                home_dir.join(".local").join("share")
+        let xdg_data_home = get_xdg_data_home()?;
+        // println!("file dev id: {:#018b}", file_device_id);
+        let mut file_dev = Device::for_path(abs_file_path)?;
+        // todo: not home dir, it's xdg_data_home to be precise
+        let home_dev = Device::for_path(&xdg_data_home)?;
+
+        // let home_metadata = get_home_dir()?.metadata()?;
+        // let home_device_id = home_metadata.st_dev();
+
+        let trash_home = if file_dev.dev_num.dev_id == home_dev.dev_num.dev_id {
+            // For every user a “home trash” directory MUST be available. Its
+            // name and location are $XDG_DATA_HOME/Trash
+            // if XDG_DATA_HOME is not defined, fallback to $HOME/.local/share
+            // let xdg_data_home = match env::var("XDG_DATA_HOME") {
+            //     Ok(v) => Path::new(&v).to_path_buf(),
+            //     Err(_) => {
+            //         let home_dir = match get_home_dir() { // todo: refactor this
+            //             Ok(v) => v,
+            //             Err(_) => {
+            //                 eprintln!("error: couldn't retrieve home directory location");
+            //                 std::process::exit(EXITCODE_EXTERNAL_ISSUE);
+            //             }
+            //         };
+
+            //         home_dir.join(".local").join("share")
+            //     }
+            // };
+
+            println!(
+                "file is in home mount: {}, {}",
+                file_dev.dev_num.dev_id, home_dev.dev_num.dev_id
+            );
+
+            // If this directory is needed for a trashing operation but does
+            // not exist, the implementation SHOULD automatically create it,
+            // without any warnings or delays
+            let trash_home = xdg_data_home.join("Trash");
+            must_have_dir(&trash_home)?;
+            trash_home
+        } else {
+            // todo: path in trashinfo should be relative, SHOULD not support absolute path names in external mounts
+            println!(
+                "file is in external mount: {}, {}",
+                file_dev.dev_num.dev_id, home_dev.dev_num.dev_id
+            );
+            file_dev.resolve_mount()?;
+            let top_dir = file_dev.mount_point.unwrap();
+
+            // check if $topdir/.Trash exist
+            let admin_trash = top_dir.join(".Trash");
+            let admin_trash_available: bool = match admin_trash.try_exists() {
+                Ok(true) => {
+                    // check if sticky bit is set and is not a symlink
+                    let mode = admin_trash.metadata()?.st_mode();
+                    println!("mode: {:#034b}, {:#X}, {}", mode, mode, mode);
+                    mode & FS_S_ISVTX == FS_S_ISVTX && !admin_trash.is_symlink()
+                }
+                // Ok(false) => {
+                // let tmp = PathBuf::from("/tmp");
+                // let mode = tmp.metadata()?.st_mode();
+                // println!("tmp  mode: {:#034b}, {:#X}, {}", mode, mode, mode);
+                // let link = PathBuf::from("/dev/mapper/vgubuntu-root");
+                // let mode = link.metadata()?.st_mode();
+                // println!("link mode: {:#034b}, {:#X}, {}", mode, mode, mode);
+                // let link = PathBuf::from("/home/chamilad/dev/chamilad/trash-rs/cargo-link");
+                // let mode = link.metadata()?.st_mode();
+                // println!("link mode: {:#034b}, {:#X}, {}", mode, mode, mode);
+                // // else, must_exist $topdir/.Trash-$uid
+                // else, must_exist $topdir/.Trash-$uid
+                // else, must_exist $topdir/.Trash-$uid
+                // get uid
+                // must_have_dir()
+                // admin_trash
+                // }
+                // Err(_) => {
+                // admin_trash
+                // }
+                _ => false,
+            };
+
+            if admin_trash_available {
+                // $topdir/.Trash/$uid
+                let euid: u32;
+                unsafe {
+                    euid = libc::geteuid();
+                    println!("euid: {}", euid);
+                }
+                let user_trash_home = admin_trash.join(euid.to_string());
+                must_have_dir(&user_trash_home)?;
+                user_trash_home
+            } else {
+                // $topdir/.Trash-uid
+                let user_trash_name: String;
+                unsafe {
+                    let euid = libc::geteuid();
+                    println!("euid: {}", euid);
+                    user_trash_name = format!(".Trash-{}", euid);
+                }
+
+                let user_trash_home = top_dir.join(user_trash_name);
+                must_have_dir(&user_trash_home)?;
+                user_trash_home
             }
         };
 
-        let trash_home = xdg_data_home.join("Trash");
-        must_have_dir(&trash_home)?;
-
-        println!("debug: trash dir: {}", trash_home.to_str().unwrap());
+        // println!("devid: {}", f_metadata.st_dev());
 
         let files_dir = trash_home.join("files");
         must_have_dir(&files_dir)?;
+
         let info_dir = trash_home.join("info");
         must_have_dir(&info_dir)?;
 
+        println!("debug: trash dir: {}", trash_home.to_str().unwrap());
         let trash_dir = TrashDirectory {
             home: trash_home,
             files: files_dir,
@@ -263,6 +364,28 @@ fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
     Ok(home_path.to_path_buf())
 }
 
+// todo
+fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
+    let xdg_data_home = match env::var("XDG_DATA_HOME") {
+        Ok(v) => Path::new(&v).to_path_buf(),
+        Err(_) => {
+            let home_dir = get_home_dir().map_err(|_| {
+                Box::<dyn Error>::from("error: couldn't retrieve home directory location")
+            });
+            //     Ok(v) => v,
+            //     Err(_) => {
+            //         eprintln!("error: couldn't retrieve home directory location");
+            //         std::process::exit(EXITCODE_EXTERNAL_ISSUE);
+            //     }
+            // };
+
+            home_dir?.join(".local").join("share")
+        }
+    };
+
+    Ok(xdg_data_home)
+}
+
 // make sure the specified path exists as a directory.
 // if the path doesn't exist, the directory is created.
 // if it exists and is not a directory, an Error is returned
@@ -294,4 +417,88 @@ fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
     };
 
     Ok(())
+}
+
+struct Device {
+    dev_num: DeviceNumber,
+    dev_name: Option<String>,
+    mount_root: Option<PathBuf>,
+    mount_point: Option<PathBuf>,
+}
+
+impl Device {
+    // man 5 proc
+    const PROCINFO_FIELD_MAJORMINOR: usize = 2;
+    const PROCINFO_FIELD_MOUNT_ROOT: usize = 3;
+    const PROCINFO_FIELD_MOUNT_POINT: usize = 4;
+    const PROCINFO_FIELD_DEV_NAME: usize = 9;
+
+    fn for_path(abs_file_path: &PathBuf) -> Result<Device, Box<dyn Error>> {
+        let dev_id = DeviceNumber::for_path(abs_file_path)?;
+        Ok(Device {
+            dev_num: dev_id,
+            dev_name: None,
+            mount_root: None,
+            mount_point: None,
+        })
+    }
+
+    fn resolve_mount(&mut self) -> Result<(), Box<dyn Error>> {
+        let mountinfo = fs::read_to_string("/proc/self/mountinfo").unwrap();
+        let mounts: Vec<&str> = mountinfo.lines().collect();
+        for mount in mounts {
+            let fields: Vec<&str> = mount.split_whitespace().collect();
+            if fields[Self::PROCINFO_FIELD_MAJORMINOR]
+                == format!("{}:{}", self.dev_num.major, self.dev_num.minor)
+            {
+                self.dev_name = Some(fields[Self::PROCINFO_FIELD_DEV_NAME].to_string());
+                self.mount_root = Some(PathBuf::from(
+                    fields[Self::PROCINFO_FIELD_MOUNT_ROOT].to_string(),
+                ));
+                self.mount_point = Some(PathBuf::from(
+                    fields[Self::PROCINFO_FIELD_MOUNT_POINT].to_string(),
+                ));
+
+                return Ok(());
+            }
+        }
+
+        Err(Box::<dyn Error>::from(
+            "could not find mount point for dev id",
+        ))
+    }
+}
+
+// both Major and Minor numbers are 8 bit ints - Linux Device Drivers, 2nd Edition
+struct DeviceNumber {
+    dev_id: u16,
+    major: u8,
+    minor: u8,
+}
+
+impl DeviceNumber {
+    // todo: might be different after kernel v2.16, need to check with latest driver docs
+    const MASK_MAJOR: u16 = 0xFF00;
+    const MASK_MINOR: u16 = 0xFF;
+
+    fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
+        let f_metadata = abs_file_path.metadata()?;
+        let file_device_id: u16 = f_metadata.st_dev().try_into().unwrap();
+        println!("device_id: {:#010b}, {:#X}", file_device_id, file_device_id);
+
+        let mut major = file_device_id & Self::MASK_MAJOR;
+        major = major >> 8;
+        let minor = file_device_id & Self::MASK_MINOR;
+
+        println!("major: {:#010b}, {:#X}, {}", major, major, major);
+        println!("minor: {:#010b}, {:#X}, {}", minor, minor, minor);
+
+        let dev_number = DeviceNumber {
+            dev_id: file_device_id,
+            major: major.try_into().unwrap(),
+            minor: minor.try_into().unwrap(),
+        };
+
+        Ok(dev_number)
+    }
 }
