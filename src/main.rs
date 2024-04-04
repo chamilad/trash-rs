@@ -45,7 +45,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     //
     // dbg!(args);
 
-    // todo: block trashing the trash
 
     // get absolute path and check file exists
     let abs_file = match std::fs::canonicalize(file_path_arg) {
@@ -57,16 +56,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    if abs_file.is_dir() {
-        eprintln!("error: directories not supported yet");
+    let trash_dir = TrashDirectory::resolve_for_file(&abs_file)?;
+    if abs_file.starts_with(&trash_dir.home) {
+        eprintln!("error: trashing the trash is not supported");
         std::process::exit(EXITCODE_UNSUPPORTED);
     }
 
-    let trash_dir = TrashDirectory::resolve_for_file(&abs_file)?;
     let mut trash_file = TrashFile::new(abs_file)?;
     trash_dir.generate_trash_entry_names(&mut trash_file)?;
-    trash_file.create_trashinfo(&trash_dir)?;
-    trash_file.trash()?;
+    // trash_file.create_trashinfo(&trash_dir)?;
+    // trash_file.trash()?;
 
     Ok(())
 }
@@ -193,8 +192,10 @@ impl TrashDirectory {
 
         // if filename present, start testing for files with an integer suffix
         // following nautilus way of starting from 2
-        // not sure what the ceiling is in nautilus, keeping 1024 for the moment
-        for n in 1..1024 {
+        // not sure what the ceiling is in nautilus
+        // looks like there's no real limit in giolocalfile
+        // https://gitlab.gnome.org/GNOME/glib/-/blob/main/gio/glocalfile.c?ref_type=heads#L2234
+        for n in 1..u32::MAX {
             let trashable_file_name =
                 Self::get_trashable_file_name(stripped_file_name.to_string(), n);
             let file = self.files.join(trashable_file_name);
@@ -222,7 +223,6 @@ impl TrashDirectory {
 
         // suffix is before the file extension if present, even if it is a dir
         // ex: test.dir.ext would be test.2.dir.ext
-        // todo: tracing this in the gio source, looks like no ceiling, need more C
         if stripped_file_name.contains(".") {
             let components = stripped_file_name.splitn(2, ".").collect::<Vec<&str>>();
             return format!("{}.{}.{}", components[0], idx, components[1]);
@@ -337,7 +337,7 @@ fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
     Ok(home_path.to_path_buf())
 }
 
-// todo
+// retrieve XDG_DATA_HOME value, from env var or falling back to spec default
 fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
     // if XDG_DATA_HOME is not defined, fallback to $HOME/.local/share
     let xdg_data_home = match env::var("XDG_DATA_HOME") {
@@ -389,12 +389,11 @@ fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
 
 // returns a PathBuf of a relative path of child against parent
 fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
-    // todo:
-    // sanitise for abs
-    // sanitise for actual child_of
+    if !child.is_absolute() || !parent.is_absolute() {
+        return Err(Box::<dyn Error>::from("require absolute paths"));
+    }
 
     let stripped = child.strip_prefix(parent)?;
-    // println!("stripped: {}", stripped.to_str().unwrap());
     Ok(stripped.to_path_buf())
 }
 
@@ -457,20 +456,32 @@ struct DeviceNumber {
 
 impl DeviceNumber {
     // todo: might be different after kernel v2.16, need to check with latest driver docs
+    // latest device drivers ref - Ch3
+    // Within the kernel, the dev_t type (defined in <linux/types.h>) is used to hold device
+    // numbers—both the major and minor parts. As of Version 2.6.0 of the kernel, dev_t is
+    // a 32-bit quantity with 12 bits set aside for the major number and 20 for the minor
+    // number. Your code should, of course, never make any assumptions about the inter-
+    // nal organization of device numbers;
     const MASK_MAJOR: u16 = 0xFF00;
     const MASK_MINOR: u16 = 0xFF;
 
     fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
         let f_metadata = abs_file_path.metadata()?;
         let file_device_id: u16 = f_metadata.st_dev().try_into().unwrap();
-        println!("device_id: {:#010b}, {:#X}", file_device_id, file_device_id);
+        println!("device_id: {:#034b}, {:#X}", file_device_id, file_device_id);
 
-        let mut major = file_device_id & Self::MASK_MAJOR;
-        major = major >> 8;
-        let minor = file_device_id & Self::MASK_MINOR;
+        // let mut major = file_device_id & Self::MASK_MAJOR;
+        // major = major >> 8;
+        // let minor = file_device_id & Self::MASK_MINOR;
 
-        println!("major: {:#010b}, {:#X}, {}", major, major, major);
-        println!("minor: {:#010b}, {:#X}, {}", minor, minor, minor);
+        // linux/kdev_t.h macros
+        // #define MAJOR(dev)	((dev)>>8)
+        // #define MINOR(dev)	((dev) & 0xff)
+        let major = file_device_id >>8;
+        let minor = file_device_id & 0xff;
+
+        println!("major: {:#034b}, {:#X}, {}", major, major, major);
+        println!("minor: {:#034b}, {:#X}, {}", minor, minor, minor);
 
         let dev_number = DeviceNumber {
             dev_id: file_device_id,
