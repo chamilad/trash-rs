@@ -64,8 +64,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut trash_file = TrashFile::new(abs_file)?;
     trash_dir.generate_trash_entry_names(&mut trash_file)?;
-    // trash_file.create_trashinfo(&trash_dir)?;
-    // trash_file.trash()?;
+    trash_file.create_trashinfo(&trash_dir)?;
+    trash_file.trash()?;
 
     Ok(())
 }
@@ -447,41 +447,30 @@ impl Device {
     }
 }
 
-// both Major and Minor numbers are 8 bit ints - Linux Device Drivers, 2nd Edition
 struct DeviceNumber {
-    dev_id: u16,
-    major: u8,
-    minor: u8,
+    dev_id: u64,
+    major: u32,
+    minor: u32,
 }
 
 impl DeviceNumber {
-    // todo: might be different after kernel v2.16, need to check with latest driver docs
     // latest device drivers ref - Ch3
     // Within the kernel, the dev_t type (defined in <linux/types.h>) is used to hold device
     // numbers—both the major and minor parts. As of Version 2.6.0 of the kernel, dev_t is
     // a 32-bit quantity with 12 bits set aside for the major number and 20 for the minor
     // number. Your code should, of course, never make any assumptions about the inter-
     // nal organization of device numbers;
-    const MASK_MAJOR: u16 = 0xFF00;
-    const MASK_MINOR: u16 = 0xFF;
-
     fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
         let f_metadata = abs_file_path.metadata()?;
-        let file_device_id: u16 = f_metadata.st_dev().try_into().unwrap();
-        println!("device_id: {:#034b}, {:#X}", file_device_id, file_device_id);
+        let file_device_id= f_metadata.st_dev();
 
-        // let mut major = file_device_id & Self::MASK_MAJOR;
-        // major = major >> 8;
-        // let minor = file_device_id & Self::MASK_MINOR;
+        let major: u32;
+        let minor: u32;
 
-        // linux/kdev_t.h macros
-        // #define MAJOR(dev)	((dev)>>8)
-        // #define MINOR(dev)	((dev) & 0xff)
-        let major = file_device_id >>8;
-        let minor = file_device_id & 0xff;
-
-        println!("major: {:#034b}, {:#X}, {}", major, major, major);
-        println!("minor: {:#034b}, {:#X}, {}", minor, minor, minor);
+        unsafe {
+            major = libc::major(file_device_id);
+            minor = libc::minor(file_device_id);
+        }
 
         let dev_number = DeviceNumber {
             dev_id: file_device_id,
