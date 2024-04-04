@@ -14,8 +14,6 @@ const EXITCODE_UNSUPPORTED: i32 = 2;
 const EXITCODE_EXTERNAL_ISSUE: i32 = 3;
 // const EXITCODE_UNKNOWN: i32 = 255;
 
-const FS_S_ISVTX: u32 = 0o1000;
-
 // todo: could use generics for path/pathbuf places
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -94,42 +92,19 @@ impl TrashDirectory {
     // todo: support expunge dir (not sure how to schedule job for permanent deletion)
     fn resolve_for_file(abs_file_path: &PathBuf) -> Result<TrashDirectory, Box<dyn Error>> {
         // check if the file is in a home mount
-        // let f_metadata = abs_file_path.metadata()?;
-        // let file_device_id = f_metadata.st_dev();
-
         let xdg_data_home = get_xdg_data_home()?;
-        // println!("file dev id: {:#018b}", file_device_id);
         let mut file_dev = Device::for_path(abs_file_path)?;
         // todo: not home dir, it's xdg_data_home to be precise
         let home_dev = Device::for_path(&xdg_data_home)?;
 
-        // let home_metadata = get_home_dir()?.metadata()?;
-        // let home_device_id = home_metadata.st_dev();
-
         let trash_home = if file_dev.dev_num.dev_id == home_dev.dev_num.dev_id {
-            // For every user a “home trash” directory MUST be available. Its
-            // name and location are $XDG_DATA_HOME/Trash
-            // if XDG_DATA_HOME is not defined, fallback to $HOME/.local/share
-            // let xdg_data_home = match env::var("XDG_DATA_HOME") {
-            //     Ok(v) => Path::new(&v).to_path_buf(),
-            //     Err(_) => {
-            //         let home_dir = match get_home_dir() { // todo: refactor this
-            //             Ok(v) => v,
-            //             Err(_) => {
-            //                 eprintln!("error: couldn't retrieve home directory location");
-            //                 std::process::exit(EXITCODE_EXTERNAL_ISSUE);
-            //             }
-            //         };
-
-            //         home_dir.join(".local").join("share")
-            //     }
-            // };
-
             println!(
                 "file is in home mount: {}, {}",
                 file_dev.dev_num.dev_id, home_dev.dev_num.dev_id
             );
 
+            // For every user a “home trash” directory MUST be available. Its
+            // name and location are $XDG_DATA_HOME/Trash
             // If this directory is needed for a trashing operation but does
             // not exist, the implementation SHOULD automatically create it,
             // without any warnings or delays
@@ -152,28 +127,8 @@ impl TrashDirectory {
                     // check if sticky bit is set and is not a symlink
                     let mode = admin_trash.metadata()?.st_mode();
                     println!("mode: {:#034b}, {:#X}, {}", mode, mode, mode);
-                    mode & FS_S_ISVTX == FS_S_ISVTX && !admin_trash.is_symlink()
+                    mode & libc::S_ISVTX == libc::S_ISVTX && !admin_trash.is_symlink()
                 }
-                // Ok(false) => {
-                // let tmp = PathBuf::from("/tmp");
-                // let mode = tmp.metadata()?.st_mode();
-                // println!("tmp  mode: {:#034b}, {:#X}, {}", mode, mode, mode);
-                // let link = PathBuf::from("/dev/mapper/vgubuntu-root");
-                // let mode = link.metadata()?.st_mode();
-                // println!("link mode: {:#034b}, {:#X}, {}", mode, mode, mode);
-                // let link = PathBuf::from("/home/chamilad/dev/chamilad/trash-rs/cargo-link");
-                // let mode = link.metadata()?.st_mode();
-                // println!("link mode: {:#034b}, {:#X}, {}", mode, mode, mode);
-                // // else, must_exist $topdir/.Trash-$uid
-                // else, must_exist $topdir/.Trash-$uid
-                // else, must_exist $topdir/.Trash-$uid
-                // get uid
-                // must_have_dir()
-                // admin_trash
-                // }
-                // Err(_) => {
-                // admin_trash
-                // }
                 _ => false,
             };
 
@@ -201,8 +156,6 @@ impl TrashDirectory {
                 user_trash_home
             }
         };
-
-        // println!("devid: {}", f_metadata.st_dev());
 
         let files_dir = trash_home.join("files");
         must_have_dir(&files_dir)?;
@@ -366,18 +319,13 @@ fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
 
 // todo
 fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
+    // if XDG_DATA_HOME is not defined, fallback to $HOME/.local/share
     let xdg_data_home = match env::var("XDG_DATA_HOME") {
         Ok(v) => Path::new(&v).to_path_buf(),
         Err(_) => {
             let home_dir = get_home_dir().map_err(|_| {
                 Box::<dyn Error>::from("error: couldn't retrieve home directory location")
             });
-            //     Ok(v) => v,
-            //     Err(_) => {
-            //         eprintln!("error: couldn't retrieve home directory location");
-            //         std::process::exit(EXITCODE_EXTERNAL_ISSUE);
-            //     }
-            // };
 
             home_dir?.join(".local").join("share")
         }
