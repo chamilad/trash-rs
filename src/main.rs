@@ -2,6 +2,7 @@ use chrono;
 use std::convert::TryInto;
 use std::env;
 use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::os::linux::fs::MetadataExt;
@@ -11,12 +12,18 @@ use libc;
 
 const EXITCODE_INVALID_ARGS: i32 = 1;
 const EXITCODE_UNSUPPORTED: i32 = 2;
-const EXITCODE_EXTERNAL_ISSUE: i32 = 3;
+// const EXITCODE_EXTERNAL_ISSUE: i32 = 3;
 // const EXITCODE_UNKNOWN: i32 = 255;
+//
+
+const binary_name: &str = "trash-rs";
+
+// Does NOT support trashing files from external mounts to user's trash dir
+// Does NOT trash a file from external mounts to home if topdirs cannot be used
 
 // todo: could use generics for path/pathbuf places
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
     // parse the args
     let args: Vec<String> = env::args().collect();
 
@@ -45,30 +52,75 @@ fn main() -> Result<(), Box<dyn Error>> {
     //
     // dbg!(args);
 
-
     // get absolute path and check file exists
     let abs_file = match std::fs::canonicalize(file_path_arg) {
         Ok(v) => v,
-        Err(e) => {
-            dbg!(e);
-            eprintln!("error: specified file doesn't exist or can't be accessed");
+        Err(_) => {
+            // dbg!(e);
+            eprintln!("{binary_name}: cannot trash '{file_path_arg}': no such file or directory");
             std::process::exit(EXITCODE_INVALID_ARGS);
         }
     };
 
-    let trash_dir = TrashDirectory::resolve_for_file(&abs_file)?;
+    let trash_dir = match TrashDirectory::resolve_for_file(&abs_file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{binary_name}: cannot trash '{file_path_arg}': cannot resolve trash directory: {e}");
+            std::process::exit(EXITCODE_UNSUPPORTED);
+        }
+    };
+
     if abs_file.starts_with(&trash_dir.home) {
-        eprintln!("error: trashing the trash is not supported");
+        eprintln!("{binary_name}: trashing the trash is not supported");
         std::process::exit(EXITCODE_UNSUPPORTED);
     }
 
-    let mut trash_file = TrashFile::new(abs_file)?;
-    trash_dir.generate_trash_entry_names(&mut trash_file)?;
-    trash_file.create_trashinfo(&trash_dir)?;
-    trash_file.trash()?;
+    let mut trash_file = match TrashFile::new(abs_file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{binary_name}: cannot trash '{file_path_arg}': {e}");
+            std::process::exit(EXITCODE_UNSUPPORTED);
+        }
+    };
 
-    Ok(())
+    match trash_dir.generate_trash_entry_names(&mut trash_file) {
+        Ok(_) => (),
+        Err(e) => {
+            eprintln!("{binary_name}: cannot trash '{file_path_arg}': {e}");
+            std::process::exit(EXITCODE_UNSUPPORTED);
+        }
+    }
+
+    match trash_file.create_trashinfo(&trash_dir) {
+        Ok(_) => (),
+        Err(e) => {
+            eprintln!("{binary_name}: cannot trash '{file_path_arg}': {e}");
+            std::process::exit(EXITCODE_UNSUPPORTED);
+        }
+    };
+
+    match trash_file.trash() {
+        Ok(_) => (),
+        Err(e) => {
+            eprintln!("{binary_name}: cannot trash '{file_path_arg}': {e}");
+            std::process::exit(EXITCODE_UNSUPPORTED);
+        }
+    }
 }
+
+// #[derive(Debug)]
+// struct ErrorTopDirUnusable {
+//     msg: String,
+// }
+
+// impl fmt::Display for ErrorTopDirUnusable {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         write!(
+//             f,
+//             "an error occurred while trying to derive top directory for file"
+//         )
+//     }
+// }
 
 enum TrashRootType {
     Home,
@@ -100,7 +152,7 @@ impl TrashDirectory {
         let xdg_data_home = get_xdg_data_home()?;
         let mut file_dev = Device::for_path(abs_file_path)?;
         let xdg_data_home_dev = Device::for_path(&xdg_data_home)?;
-        let trash_root_type: TrashRootType;
+        let mut trash_root_type: TrashRootType;
 
         let trash_home = if file_dev.dev_num.dev_id == xdg_data_home_dev.dev_num.dev_id {
             println!(
@@ -126,18 +178,6 @@ impl TrashDirectory {
             file_dev.resolve_mount()?;
             let top_dir = file_dev.mount_point.clone().unwrap();
 
-            // check if $topdir/.Trash exist
-            let admin_trash = top_dir.join(".Trash");
-            let admin_trash_available: bool = match admin_trash.try_exists() {
-                Ok(true) => {
-                    // check if sticky bit is set and is not a symlink
-                    let mode = admin_trash.metadata()?.st_mode();
-                    println!("mode: {:#034b}, {:#X}, {}", mode, mode, mode);
-                    mode & libc::S_ISVTX == libc::S_ISVTX && !admin_trash.is_symlink()
-                }
-                _ => false,
-            };
-
             // user specific directory name
             // todo: int test with a another user
             let euid: u32;
@@ -145,22 +185,28 @@ impl TrashDirectory {
                 euid = libc::geteuid();
             }
 
-            if admin_trash_available {
-                // $topdir/.Trash/$uid
-                let user_trash_home = admin_trash.join(euid.to_string());
-                must_have_dir(&user_trash_home)?;
+            let trash_home = match Self::try_topdir_admin_trash(top_dir.clone(), euid) {
+                Ok(p) => {
+                    trash_root_type = TrashRootType::TopDirAdmin;
+                    p
+                }
+                Err(_) => {
+                    // if the method (1) fails at any point — that is, the $topdir/.
+                    // Trash directory does not exist, or it fails the checks, or the
+                    // system refuses to create an $uid directory in it — the
+                    // implementation MUST, by default, fall back to method (2)
+                    //
+                    let p = Self::try_topdir_user_trash(top_dir, euid)?;
+                    trash_root_type = TrashRootType::TopDirUser;
+                    p
+                }
+            };
 
-                trash_root_type = TrashRootType::TopDirAdmin;
-                user_trash_home
-            } else {
-                // $topdir/.Trash-uid
-                let user_trash_name = format!(".Trash-{}", euid);
-                let user_trash_home = top_dir.join(user_trash_name);
-                must_have_dir(&user_trash_home)?;
+            trash_home
 
-                trash_root_type = TrashRootType::TopDirUser;
-                user_trash_home
-            }
+            // if admin_trash_available {
+            // } else {
+            // }
         };
 
         let files_dir = trash_home.join("files");
@@ -211,7 +257,7 @@ impl TrashDirectory {
         }
 
         return Err(Box::<dyn Error>::from(
-            "error: reached maximum trash file iteration",
+            "error: reached maximum trash file name iteration",
         ));
     }
 
@@ -229,6 +275,76 @@ impl TrashDirectory {
         }
 
         format!("{}.{}", stripped_file_name, idx)
+    }
+
+    fn try_topdir_admin_trash(
+        top_dir: PathBuf,
+        euid: libc::uid_t,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        // An administrator can create an $topdir/.Trash directory. The
+        // permissions on this directories should permit all users who
+        // can trash files at all to write in it.; and the “sticky bit”
+        // in the permissions must be set, if the file system supports it.
+        //
+        // check if $topdir/.Trash exist
+        // todo: check if writable
+        let admin_trash = top_dir.join(".Trash");
+        match admin_trash.try_exists() {
+            Ok(true) => {
+                // If this directory is present, the implementation MUST,
+                // by default, check for the “sticky bit”.
+                // todo: provide superusers to disable this check to
+                // support filesystems that don't support sticky bit.
+                //
+                // The implementation also MUST check that this directory
+                // is not a symbolic link.
+                //
+                // check if sticky bit is set and is not a symlink
+                let mode = admin_trash.metadata()?.st_mode();
+                // println!("mode: {:#034b}, {:#X}, {}", mode, mode, mode);
+                let sticky_bit_set = mode & libc::S_ISVTX == libc::S_ISVTX;
+                if sticky_bit_set && !admin_trash.is_symlink() {
+                    // topdir approach 1
+                    //
+                    //  if this directory does not exist for the current user, the
+                    //  implementation MUST immediately create it, without any
+                    //  warnings or delays for the user.
+                    //
+                    // $topdir/.Trash/$uid
+                    let user_trash_home = admin_trash.join(euid.to_string());
+                    must_have_dir(&user_trash_home)?;
+
+                    Ok(user_trash_home)
+                } else {
+                    Err(Box::<dyn Error>::from(
+                        "top directory trash is a symlink or sticky bit not set",
+                    ))
+                }
+
+                // todo: Besides, the implementation SHOULD report the
+                // failed check to the administrator, and MAY also report it to the user.
+            }
+            _ => Err(Box::<dyn Error>::from("top directory trash does not exist")),
+        }
+    }
+
+    fn try_topdir_user_trash(
+        top_dir: PathBuf,
+        euid: libc::uid_t,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        // topdir approach 2
+        //
+        // todo: The implementation MAY, however, provide a way for the
+        // administrator to disable (2) completely.
+        //
+        // the implementation MUST immediately create it
+        //
+        // $topdir/.Trash-uid
+        let user_trash_name = format!(".Trash-{}", euid);
+        let user_trash_home = top_dir.join(user_trash_name);
+        must_have_dir(&user_trash_home)?;
+
+        Ok(user_trash_home)
     }
 }
 
@@ -263,7 +379,7 @@ impl TrashFile {
                 let trash_home_mt_point = trash_dir.device.mount_point.as_ref().unwrap();
                 relative_path = get_path_relative_to(&self.original_file, &trash_home_mt_point)?;
                 relative_path.to_str().unwrap()
-            },
+            }
         };
 
         let info_entry = self.trashinfo_entry.as_ref().unwrap();
@@ -462,7 +578,7 @@ impl DeviceNumber {
     // nal organization of device numbers;
     fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
         let f_metadata = abs_file_path.metadata()?;
-        let file_device_id= f_metadata.st_dev();
+        let file_device_id = f_metadata.st_dev();
 
         let major: u32;
         let minor: u32;
