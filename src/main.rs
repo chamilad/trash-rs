@@ -2,7 +2,7 @@ use chrono;
 use std::convert::TryInto;
 use std::env;
 use std::error::Error;
-use std::fmt;
+use std::ffi::CString;
 use std::fs;
 use std::io::Write;
 use std::os::linux::fs::MetadataExt;
@@ -16,7 +16,7 @@ const EXITCODE_UNSUPPORTED: i32 = 2;
 // const EXITCODE_UNKNOWN: i32 = 255;
 //
 
-const binary_name: &str = "trash-rs";
+const BINARY_NAME: &str = "trash-rs";
 
 // Does NOT support trashing files from external mounts to user's trash dir
 // Does NOT trash a file from external mounts to home if topdirs cannot be used
@@ -57,7 +57,7 @@ fn main() {
         Ok(v) => v,
         Err(_) => {
             // dbg!(e);
-            eprintln!("{binary_name}: cannot trash '{file_path_arg}': no such file or directory");
+            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': no such file or directory");
             std::process::exit(EXITCODE_INVALID_ARGS);
         }
     };
@@ -65,20 +65,20 @@ fn main() {
     let trash_dir = match TrashDirectory::resolve_for_file(&abs_file) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("{binary_name}: cannot trash '{file_path_arg}': cannot resolve trash directory: {e}");
+            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': cannot resolve trash directory: {e}");
             std::process::exit(EXITCODE_UNSUPPORTED);
         }
     };
 
     if abs_file.starts_with(&trash_dir.home) {
-        eprintln!("{binary_name}: trashing the trash is not supported");
+        eprintln!("{BINARY_NAME}: trashing the trash is not supported");
         std::process::exit(EXITCODE_UNSUPPORTED);
     }
 
     let mut trash_file = match TrashFile::new(abs_file) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("{binary_name}: cannot trash '{file_path_arg}': {e}");
+            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': {e}");
             std::process::exit(EXITCODE_UNSUPPORTED);
         }
     };
@@ -86,7 +86,7 @@ fn main() {
     match trash_dir.generate_trash_entry_names(&mut trash_file) {
         Ok(_) => (),
         Err(e) => {
-            eprintln!("{binary_name}: cannot trash '{file_path_arg}': {e}");
+            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': {e}");
             std::process::exit(EXITCODE_UNSUPPORTED);
         }
     }
@@ -94,7 +94,7 @@ fn main() {
     match trash_file.create_trashinfo(&trash_dir) {
         Ok(_) => (),
         Err(e) => {
-            eprintln!("{binary_name}: cannot trash '{file_path_arg}': {e}");
+            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': {e}");
             std::process::exit(EXITCODE_UNSUPPORTED);
         }
     };
@@ -102,7 +102,7 @@ fn main() {
     match trash_file.trash() {
         Ok(_) => (),
         Err(e) => {
-            eprintln!("{binary_name}: cannot trash '{file_path_arg}': {e}");
+            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': {e}");
             std::process::exit(EXITCODE_UNSUPPORTED);
         }
     }
@@ -299,6 +299,21 @@ impl TrashDirectory {
                 // The implementation also MUST check that this directory
                 // is not a symbolic link.
                 //
+
+                // test if user can write to this dir
+                let writable: libc::c_int;
+                let path_cstr = CString::new(admin_trash.file_name().unwrap().to_str().unwrap())?;
+                unsafe {
+                    writable = libc::access(path_cstr.as_ptr(), libc::W_OK);
+                }
+
+                // access manpage for ubuntu: On success (all requested
+                // permissions granted, or mode is F_OK and the file exists),
+                // zero is returned.
+                if writable != 0 {
+                    return Err(Box::<dyn Error>::from("top directory trash isn't writable"));
+                }
+
                 // check if sticky bit is set and is not a symlink
                 let mode = admin_trash.metadata()?.st_mode();
                 // println!("mode: {:#034b}, {:#X}, {}", mode, mode, mode);
