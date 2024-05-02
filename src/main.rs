@@ -6,121 +6,155 @@ use std::ffi::CString;
 use std::fs;
 use std::io::Write;
 use std::os::linux::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use libc;
 
+const EXITCODE_OK: i32 = 0;
 const EXITCODE_INVALID_ARGS: i32 = 1;
 const EXITCODE_UNSUPPORTED: i32 = 2;
-// const EXITCODE_EXTERNAL_ISSUE: i32 = 3;
-// const EXITCODE_UNKNOWN: i32 = 255;
-//
-
-const BINARY_NAME: &str = "trash-rs";
 
 // Does NOT support trashing files from external mounts to user's trash dir
 // Does NOT trash a file from external mounts to home if topdirs cannot be used
 
-// todo: could use generics for path/pathbuf places
-
 fn main() {
-    // parse the args
-    let args: Vec<String> = env::args().collect();
-
-    // if there's just one arg, that should be the filename, not a flag
-    if args.len() < 2 {
-        eprintln!("error: missing file name");
-        std::process::exit(EXITCODE_INVALID_ARGS);
-    }
-
-    if args[args.len() - 1].starts_with("-") {
-        eprintln!("error: missing file name");
-        std::process::exit(EXITCODE_INVALID_ARGS);
-    }
-
-    // let flags: Vec<String> = Vec::new();
-    // todo: last item is file for now
-    let file_path_arg: &String = &args[args.len() - 1];
-
-    // todo: clean args
-    // check all but last arguments are flags
-    // for arg in &args[1..args.len()-2] {
-
-    // }
-
-    // 1. check if file/dir exists
-    //
-    // dbg!(args);
-
-    // get absolute path and check file exists
-    let abs_file = match std::fs::canonicalize(file_path_arg) {
+    let binary_name = match env::var("CARGO_PKG_NAME") {
         Ok(v) => v,
-        Err(_) => {
-            // dbg!(e);
-            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': no such file or directory");
+        Err(_) => "trash-rs".to_string(),
+    };
+
+    // skip the binary name
+    let args: Vec<String> = env::args().skip(1).collect();
+    let args_conf = match parse_args(args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{binary_name}: {e}");
+            eprintln!("try '{binary_name} -h' for more information.");
             std::process::exit(EXITCODE_INVALID_ARGS);
         }
     };
 
-    let trash_dir = match TrashDirectory::resolve_for_file(&abs_file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': cannot resolve trash directory: {e}");
-            std::process::exit(EXITCODE_UNSUPPORTED);
-        }
-    };
-
-    if abs_file.starts_with(&trash_dir.home) {
-        eprintln!("{BINARY_NAME}: trashing the trash is not supported");
-        std::process::exit(EXITCODE_UNSUPPORTED);
+    if args_conf.version {
+        let version = match env::var("CARGO_PKG_VERSION") {
+            Ok(v) => v,
+            Err(_) => "latest".to_string(),
+        };
+        println!("{binary_name} ({version})");
+        std::process::exit(EXITCODE_OK);
     }
 
-    let mut trash_file = match TrashFile::new(abs_file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': {e}");
-            std::process::exit(EXITCODE_UNSUPPORTED);
-        }
-    };
-
-    match trash_dir.generate_trash_entry_names(&mut trash_file) {
-        Ok(_) => (),
-        Err(e) => {
-            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': {e}");
-            std::process::exit(EXITCODE_UNSUPPORTED);
-        }
+    if args_conf.help {
+        println!("help text here todo");
+        std::process::exit(EXITCODE_OK);
     }
 
-    match trash_file.create_trashinfo(&trash_dir) {
-        Ok(_) => (),
-        Err(e) => {
-            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': {e}");
+    for file_name in args_conf.file_names {
+        // get absolute path and check file exists
+        let abs_file = match std::fs::canonicalize(&file_name) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("{binary_name}: cannot trash '{file_name}': no such file or directory");
+                std::process::exit(EXITCODE_INVALID_ARGS);
+            }
+        };
+
+        let trash_dir = match TrashDirectory::resolve_for_file(&abs_file) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{binary_name}: cannot trash '{file_name}': cannot resolve trash directory: {e}");
+                std::process::exit(EXITCODE_UNSUPPORTED);
+            }
+        };
+
+        if abs_file.starts_with(&trash_dir.home) {
+            eprintln!("{binary_name}: trashing the trash is not supported");
             std::process::exit(EXITCODE_UNSUPPORTED);
         }
-    };
 
-    match trash_file.trash() {
-        Ok(_) => (),
-        Err(e) => {
-            eprintln!("{BINARY_NAME}: cannot trash '{file_path_arg}': {e}");
-            std::process::exit(EXITCODE_UNSUPPORTED);
+        let mut trash_file = match TrashFile::new(abs_file) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{binary_name}: cannot trash '{file_name}': {e}");
+                std::process::exit(EXITCODE_UNSUPPORTED);
+            }
+        };
+
+        match trash_dir.generate_trash_entry_names(&mut trash_file) {
+            Ok(_) => (),
+            Err(e) => {
+                eprintln!("{binary_name}: cannot trash '{file_name}': {e}");
+                std::process::exit(EXITCODE_UNSUPPORTED);
+            }
+        }
+
+        match trash_file.create_trashinfo(&trash_dir) {
+            Ok(_) => (),
+            Err(e) => {
+                eprintln!("{binary_name}: cannot trash '{file_name}': {e}");
+                std::process::exit(EXITCODE_UNSUPPORTED);
+            }
+        };
+
+        match trash_file.trash() {
+            Ok(_) => (),
+            Err(e) => {
+                eprintln!("{binary_name}: cannot trash '{file_name}': {e}");
+                std::process::exit(EXITCODE_UNSUPPORTED);
+            }
         }
     }
 }
 
-// #[derive(Debug)]
-// struct ErrorTopDirUnusable {
-//     msg: String,
-// }
+fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
+    // need at least one arg
+    if args.len() == 0 {
+        return Err(Box::<dyn Error>::from("missing operand"));
+    }
 
-// impl fmt::Display for ErrorTopDirUnusable {
-//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-//         write!(
-//             f,
-//             "an error occurred while trying to derive top directory for file"
-//         )
-//     }
-// }
+    let mut interactive: bool = false;
+    let mut verbose: bool = false;
+    let mut help: bool = false;
+    let mut version: bool = false;
+    let mut file_names: Vec<String> = vec![];
+    for arg in args {
+        match arg.as_str() {
+            "-i" | "--interactive" => interactive = true,
+            "-v" | "--verbose" => verbose = true,
+            "-h" | "--help" => help = true,
+            "-V" | "--version" => version = true,
+            _ => {
+                if arg.starts_with("-") {
+                    return Err(Box::<dyn Error>::from(format!("invalid option -- '{arg}'")));
+                }
+
+                file_names.push(arg);
+            }
+        }
+    }
+
+    if file_names.len() == 0 && (interactive || verbose) {
+        return Err(Box::<dyn Error>::from("missing operand"));
+    }
+
+    Ok(Args {
+        interactive,
+        verbose,
+        help,
+        version,
+        file_names,
+    })
+}
+
+// todo: list of files
+// todo: test for files that start with -, ex: -foo
+#[derive(Debug, Clone)]
+struct Args {
+    interactive: bool, // -i, --interactive
+    verbose: bool,     // -v, --verbose
+    help: bool,        // -h, --help
+    version: bool,     // -V, --version
+    file_names: Vec<String>,
+}
 
 enum TrashRootType {
     Home,
@@ -152,14 +186,9 @@ impl TrashDirectory {
         let xdg_data_home = get_xdg_data_home()?;
         let mut file_dev = Device::for_path(abs_file_path)?;
         let xdg_data_home_dev = Device::for_path(&xdg_data_home)?;
-        let mut trash_root_type: TrashRootType;
+        let trash_root_type: TrashRootType;
 
         let trash_home = if file_dev.dev_num.dev_id == xdg_data_home_dev.dev_num.dev_id {
-            println!(
-                "file is in home mount: {}, {}",
-                file_dev.dev_num.dev_id, xdg_data_home_dev.dev_num.dev_id
-            );
-
             // For every user a “home trash” directory MUST be available. Its
             // name and location are $XDG_DATA_HOME/Trash
             // If this directory is needed for a trashing operation but does
@@ -171,10 +200,6 @@ impl TrashDirectory {
 
             trash_home
         } else {
-            println!(
-                "file is in external mount: {}, {}",
-                file_dev.dev_num.dev_id, xdg_data_home_dev.dev_num.dev_id
-            );
             file_dev.resolve_mount()?;
             let top_dir = file_dev.mount_point.clone().unwrap();
 
@@ -186,27 +211,28 @@ impl TrashDirectory {
             }
 
             let trash_home = match Self::try_topdir_admin_trash(top_dir.clone(), euid) {
-                Ok(p) => {
+                Ok(v) => {
                     trash_root_type = TrashRootType::TopDirAdmin;
-                    p
+                    v
                 }
-                Err(_) => {
+                Err(e) => {
                     // if the method (1) fails at any point — that is, the $topdir/.
                     // Trash directory does not exist, or it fails the checks, or the
                     // system refuses to create an $uid directory in it — the
                     // implementation MUST, by default, fall back to method (2)
                     //
-                    let p = Self::try_topdir_user_trash(top_dir, euid)?;
+                    // Besides, the implementation SHOULD report the failed
+                    // check to the administrator, and MAY also report it to
+                    // the user.
+                    eprintln!("top directory trash for file is unusable: {e}");
+
+                    let top_dir_user_trash = Self::try_topdir_user_trash(top_dir, euid)?;
                     trash_root_type = TrashRootType::TopDirUser;
-                    p
+                    top_dir_user_trash
                 }
             };
 
             trash_home
-
-            // if admin_trash_available {
-            // } else {
-            // }
         };
 
         let files_dir = trash_home.join("files");
@@ -215,7 +241,6 @@ impl TrashDirectory {
         let info_dir = trash_home.join("info");
         must_have_dir(&info_dir)?;
 
-        println!("debug: trash dir: {}", trash_home.to_str().unwrap());
         let trash_dir = TrashDirectory {
             device: file_dev,
             root_type: trash_root_type,
@@ -257,7 +282,7 @@ impl TrashDirectory {
         }
 
         return Err(Box::<dyn Error>::from(
-            "error: reached maximum trash file name iteration",
+            "reached maximum trash file name iteration",
         ));
     }
 
@@ -286,8 +311,7 @@ impl TrashDirectory {
         // can trash files at all to write in it.; and the “sticky bit”
         // in the permissions must be set, if the file system supports it.
         //
-        // check if $topdir/.Trash exist
-        // todo: check if writable
+        // check if $topdir/.Trash exist and is usable
         let admin_trash = top_dir.join(".Trash");
         match admin_trash.try_exists() {
             Ok(true) => {
@@ -316,7 +340,6 @@ impl TrashDirectory {
 
                 // check if sticky bit is set and is not a symlink
                 let mode = admin_trash.metadata()?.st_mode();
-                // println!("mode: {:#034b}, {:#X}, {}", mode, mode, mode);
                 let sticky_bit_set = mode & libc::S_ISVTX == libc::S_ISVTX;
                 if sticky_bit_set && !admin_trash.is_symlink() {
                     // topdir approach 1
@@ -335,9 +358,6 @@ impl TrashDirectory {
                         "top directory trash is a symlink or sticky bit not set",
                     ))
                 }
-
-                // todo: Besides, the implementation SHOULD report the
-                // failed check to the administrator, and MAY also report it to the user.
             }
             _ => Err(Box::<dyn Error>::from("top directory trash does not exist")),
         }
@@ -381,11 +401,6 @@ impl TrashFile {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
 
-        println!(
-            "debug: creating trashinfo: {}",
-            self.original_file.to_str().unwrap(),
-        );
-
         let relative_path: PathBuf;
         // The system SHOULD support absolute pathnames only in the “home trash” directory, not in the directories under $topdir
         let file_path_key = match trash_dir.root_type {
@@ -412,10 +427,6 @@ DeletionDate={}
             file_path_key, deletion_date
         );
 
-        println!(
-            "debug: creating trashinfo file: {}",
-            info_entry.to_str().unwrap(),
-        );
         let mut f = match std::fs::File::create(info_entry) {
             Ok(v) => v,
             Err(e) => {
@@ -426,12 +437,8 @@ DeletionDate={}
             }
         };
 
-        println!(
-            "debug: writing to trashinfo: {}",
-            info_entry.to_str().unwrap(),
-        );
         match f.write_all(trashinfo.as_bytes()) {
-            Ok(_) => println!("debug: trashinfo created"),
+            Ok(_) => (),
             Err(e) => {
                 return Err(Box::<dyn Error>::from(format!(
                     "error while writing to trashinfo file: {}",
@@ -449,11 +456,6 @@ DeletionDate={}
         }
 
         let files_entry = self.files_entry.as_ref().unwrap();
-        println!(
-            "debug: moving {} to {}",
-            self.original_file.to_str().unwrap(),
-            files_entry.to_str().unwrap()
-        );
         fs::rename(&self.original_file, files_entry)?;
         Ok(files_entry)
     }
@@ -463,20 +465,19 @@ DeletionDate={}
 // todo: lookup passwd for home dir entry if $HOME isn't defined
 fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
     let home_dir = env::var("HOME")?;
-    let home_path = Path::new(&home_dir);
+    let home_path = PathBuf::from(&home_dir);
 
-    Ok(home_path.to_path_buf())
+    Ok(home_path)
 }
 
 // retrieve XDG_DATA_HOME value, from env var or falling back to spec default
 fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
     // if XDG_DATA_HOME is not defined, fallback to $HOME/.local/share
     let xdg_data_home = match env::var("XDG_DATA_HOME") {
-        Ok(v) => Path::new(&v).to_path_buf(),
+        Ok(v) => PathBuf::from(&v),
         Err(_) => {
-            let home_dir = get_home_dir().map_err(|_| {
-                Box::<dyn Error>::from("error: couldn't retrieve home directory location")
-            });
+            let home_dir = get_home_dir()
+                .map_err(|_| Box::<dyn Error>::from("couldn't retrieve home directory location"));
 
             home_dir?.join(".local").join("share")
         }
@@ -501,7 +502,7 @@ fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
         Ok(false) => {
             return fs::create_dir(path).map_err(|e| {
                 Box::<dyn Error>::from(format!(
-                    "error: cannot create directory: {}, {}",
+                    "cannot create directory: {}, {}",
                     path.to_str().unwrap(),
                     e,
                 ))
@@ -509,7 +510,7 @@ fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
         }
         Err(_) => {
             return Err(Box::<dyn Error>::from(format!(
-                "error: cannot verify directory exists: {}",
+                "cannot verify directory exists: {}",
                 path.to_str().unwrap()
             )));
         }
