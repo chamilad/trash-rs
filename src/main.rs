@@ -1,13 +1,15 @@
-use chrono;
-use lazy_static::lazy_static;
-use std::convert::TryInto;
+use chrono::Local;
+use rand::Rng;
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
-use std::fs;
+use std::fs::{copy, create_dir, read_to_string, rename, File, OpenOptions};
 use std::io::{stdin, stdout, Write};
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
+use std::time::SystemTime;
+
+use urlencoding::encode;
 
 use libc;
 
@@ -18,14 +20,6 @@ const EXITCODE_EXTERNAL: i32 = 255;
 
 // Does NOT support trashing files from external mounts to user's trash dir
 // Does NOT trash a file from external mounts to home if topdirs cannot be used
-
-lazy_static! {
-    pub static ref BINARY_NAME: String = match env::var("CARGO_PKG_NAME") {
-        Ok(v) => v,
-        Err(_) => "trash-rs-default".to_string(),
-    };
-}
-
 fn main() {
     // skip the binary name, and parse rest of the args
     let args: Vec<String> = env::args().skip(1).collect();
@@ -39,11 +33,8 @@ fn main() {
     };
 
     if args_conf.version {
-        let version = match env::var("CARGO_PKG_VERSION") {
-            Ok(v) => v,
-            Err(_) => "latest".to_string(),
-        };
-        let binary_name = &*BINARY_NAME;
+        let version = env!("CARGO_PKG_VERSION");
+        let binary_name = env!("CARGO_PKG_NAME");
         println!("{binary_name} ({version})");
         std::process::exit(EXITCODE_OK);
     }
@@ -64,6 +55,18 @@ fn main() {
                 std::process::exit(EXITCODE_INVALID_ARGS);
             }
         };
+
+        // When trashing a file or directory, the implementation SHOULD
+        // check whether the user has the necessary permissions to delete it,
+        // before starting the trashing operation itself.
+        //
+        // can refuse trashing because of lack of more permissions to the file
+        if !can_delete_file(&abs_file) {
+            msg_err(format!(
+                "cannot trash '{file_name}': not enough permissions to delete the file"
+            ));
+            std::process::exit(EXITCODE_UNSUPPORTED);
+        }
 
         let trash_dir = match TrashDirectory::resolve_for_file(&abs_file, args_conf.verbose) {
             Ok(v) => v,
@@ -138,10 +141,17 @@ fn main() {
                 std::process::exit(EXITCODE_UNSUPPORTED);
             }
         }
+
+        if let Err(e) = trash_dir.update_dir_sizes_entry(&trash_file) {
+            if args_conf.verbose {
+                msg_err(format!("error while updating directorysizes: {e}"));
+            }
+        }
     }
 }
 
 // todo: support merged flags ex: -iv
+// todo: don't error out for unsupported rm flags, maybe a msg in stderr and continue
 fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
     // need at least one arg
     if args.len() == 0 {
@@ -192,6 +202,7 @@ struct Args {
     file_names: Vec<String>,
 }
 
+#[derive(Eq, PartialEq)]
 enum TrashRootType {
     Home,        // trash directory is in user's home directory
     TopDirAdmin, // trash directory is the .Trash/{euid} directory in the top directory for the mount the file exists in
@@ -203,14 +214,7 @@ struct TrashDirectory {
     home: PathBuf,
     files: PathBuf,
     info: PathBuf,
-    dir_sizes: Option<PathBuf>,
     root_type: TrashRootType,
-}
-
-struct TrashFile {
-    original_file: PathBuf,
-    files_entry: Option<PathBuf>,
-    trashinfo_entry: Option<PathBuf>,
 }
 
 impl TrashDirectory {
@@ -292,7 +296,6 @@ impl TrashDirectory {
             home: trash_home,
             files: files_dir,
             info: info_dir,
-            dir_sizes: None,
         };
 
         Ok(trash_dir)
@@ -329,6 +332,86 @@ impl TrashDirectory {
         return Err(Box::<dyn Error>::from(
             "reached maximum trash file name iteration",
         ));
+    }
+
+    fn update_dir_sizes_entry(&self, trash_file: &TrashFile) -> Result<(), Box<dyn Error>> {
+        let trashed_file = trash_file.files_entry.clone().unwrap();
+        if !trashed_file.is_dir() {
+            return Ok(());
+        }
+
+        let current_dir_sizes = self.home.join("directorysizes");
+        if current_dir_sizes.exists() && !current_dir_sizes.is_file() {
+            let p = current_dir_sizes.to_str().unwrap();
+            return Err(Box::<dyn Error>::from(format!(
+                "{p} is not a file, not updating directorysizes"
+            )));
+        }
+
+        let size = get_dir_size(&trashed_file)?;
+        let mtime = match trash_file
+            .trashinfo_entry
+            .clone()
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .modified()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                msg_err(format!(
+                    "cannot update directorysizes: cannot get mtime: {e}"
+                ));
+                return Ok(());
+            }
+        };
+
+        let mtime_epoch = mtime.duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
+
+        // encode the dir name
+        let dir_name = trashed_file.file_name().unwrap().to_str().unwrap();
+        let encoded_dir_name = encode(dir_name);
+
+        // copy the current file to tmp
+        let mut rng = rand::thread_rng();
+        let random_nu = rng.gen_range(100000000..999999999);
+
+        // downstream rename will not work across different mount points
+        // so the temp file has to be made on the same parition
+        let temp_dir = if self.root_type == TrashRootType::Home {
+            env::temp_dir()
+        } else {
+            self.home.clone()
+        };
+
+        let binary_name = env!("CARGO_PKG_NAME");
+        let tool_temp_dir = temp_dir.join(binary_name);
+        must_have_dir(&tool_temp_dir)?;
+
+        let target_file_path = tool_temp_dir.join(format!("directorysizes-{random_nu}"));
+
+        //todo: need to check for permissions before this is done
+        let mut f = if current_dir_sizes.exists() {
+            copy(&current_dir_sizes, &target_file_path).map_err(|e| {
+                return Box::<dyn Error>::from(format!(
+                    "couldn't create new directorysizes file: {e}"
+                ));
+            })?;
+            File::open(&target_file_path)?
+        } else {
+            File::create(&target_file_path)?
+        };
+
+        // update with the latest entry
+        if let Err(e) = writeln!(f, "{size} {mtime_epoch} {encoded_dir_name}") {
+            return Err(Box::<dyn Error>::from(format!(
+                "couldn't update directorysizes: {e}"
+            )));
+        }
+
+        // atomically move the file back
+        rename(&target_file_path, &current_dir_sizes)?;
+        Ok(())
     }
 
     fn get_trashable_file_name(stripped_file_name: String, idx: u32) -> String {
@@ -370,7 +453,7 @@ impl TrashDirectory {
                 // is not a symbolic link.
 
                 // test if user can write to this dir
-                if !is_writable_dir(&admin_trash)? {
+                if !is_writable_dir(&admin_trash) {
                     return Err(Box::<dyn Error>::from(format!(
                         "top directory trash '{admin_trash_location}' isn't writable"
                     )));
@@ -389,7 +472,7 @@ impl TrashDirectory {
                     // $topdir/.Trash/$uid
                     let user_trash_home = admin_trash.join(euid.to_string());
                     must_have_dir(&user_trash_home)?;
-                    if !is_writable_dir(&user_trash_home)? {
+                    if !is_writable_dir(&user_trash_home) {
                         let user_trash_location = user_trash_home.to_str().unwrap();
                         return Err(Box::<dyn Error>::from(format!(
                             "user directory in top directory trash '{user_trash_location}' isn't writable"
@@ -424,7 +507,7 @@ impl TrashDirectory {
         let user_trash_name = format!(".Trash-{}", euid);
         let user_trash_home = top_dir.join(user_trash_name);
         must_have_dir(&user_trash_home)?;
-        if !is_writable_dir(&user_trash_home)? {
+        if !is_writable_dir(&user_trash_home) {
             let user_trash_location = user_trash_home.to_str().unwrap();
             return Err(Box::<dyn Error>::from(format!(
                 "user directory in top directory trash '{user_trash_location}' isn't writable"
@@ -435,19 +518,42 @@ impl TrashDirectory {
     }
 }
 
+// enum FileType {
+//     File,
+//     Dir,
+//     SymLink,
+// }
+
+struct TrashFile {
+    original_file: PathBuf,
+    // file_type: FileType,
+    files_entry: Option<PathBuf>,
+    trashinfo_entry: Option<PathBuf>,
+}
+
 impl TrashFile {
     fn new(original_file: PathBuf) -> Result<TrashFile, Box<dyn Error>> {
         if !original_file.is_absolute() {
             return Err(Box::<dyn Error>::from("file path is not absolute"));
         }
 
+        // let file_type = match original_file.is_dir() {
+        //     true => FileType::Dir,
+        //     false => match original_file.is_symlink() {
+        //         true => FileType::SymLink,
+        //         false => FileType::File,
+        //     },
+        // };
+
         Ok(TrashFile {
             original_file,
+            // file_type,
             files_entry: None,
             trashinfo_entry: None,
         })
     }
 
+    // todo: make this atomic across system
     fn create_trashinfo(&self, trash_dir: &TrashDirectory) -> Result<&PathBuf, Box<dyn Error>> {
         if self.files_entry == None || self.trashinfo_entry == None {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
@@ -469,7 +575,7 @@ impl TrashFile {
             return Err(Box::<dyn Error>::from("info entry already exists"));
         }
 
-        let now = chrono::Local::now();
+        let now = Local::now();
         let deletion_date = now.to_rfc3339_opts(chrono::format::SecondsFormat::Secs, true);
         let trashinfo = format!(
             r#"[Trash Info]
@@ -479,12 +585,15 @@ DeletionDate={}
             file_path_key, deletion_date
         );
 
-        let mut f = match std::fs::File::create(info_entry) {
+        let mut f = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(info_entry)
+        {
             Ok(v) => v,
             Err(e) => {
                 return Err(Box::<dyn Error>::from(format!(
-                    "error while creating trashinfo entry: {}",
-                    e
+                    "error while creating trashinfo entry: {e}"
                 )));
             }
         };
@@ -493,8 +602,7 @@ DeletionDate={}
             Ok(_) => (),
             Err(e) => {
                 return Err(Box::<dyn Error>::from(format!(
-                    "error while writing to trashinfo file: {}",
-                    e
+                    "error while writing to trashinfo file: {e}"
                 )));
             }
         };
@@ -508,7 +616,7 @@ DeletionDate={}
         }
 
         let files_entry = self.files_entry.as_ref().unwrap();
-        fs::rename(&self.original_file, files_entry)?;
+        rename(&self.original_file, files_entry)?;
         Ok(files_entry)
     }
 }
@@ -538,22 +646,29 @@ fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
     Ok(xdg_data_home)
 }
 
-fn is_writable_dir(path: &PathBuf) -> Result<bool, Box<dyn Error>> {
+// todo: this check is done with process real uid, so sudo invocation will still fail
+// alternative is to use faccessat() with AT_EACCESS.
+// the decision here is to whether allow sudo invocation to trash a file that
+// a user doesn't have access to
+fn is_writable_dir(path: &PathBuf) -> bool {
     let writable: libc::c_int;
     let dir_location = path.to_str().unwrap();
-    let path_cstr = CString::new(dir_location)?;
+    let path_cstr = match CString::new(dir_location) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
     unsafe {
-        writable = libc::access(path_cstr.as_ptr(), libc::W_OK);
+        writable = libc::access(path_cstr.as_ptr(), libc::R_OK | libc::W_OK | libc::X_OK);
     }
 
     // access manpage for ubuntu: On success (all requested
     // permissions granted, or mode is F_OK and the file exists),
     // zero is returned.
     if writable != 0 {
-        return Ok(false);
+        return false;
     }
 
-    Ok(true)
+    true
 }
 
 // make sure the specified path exists as a directory.
@@ -570,7 +685,7 @@ fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
             }
         }
         Ok(false) => {
-            return fs::create_dir(path).map_err(|e| {
+            return create_dir(path).map_err(|e| {
                 Box::<dyn Error>::from(format!(
                     "cannot create directory: {}, {}",
                     path.to_str().unwrap(),
@@ -599,6 +714,42 @@ fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf, Bo
     Ok(stripped.to_path_buf())
 }
 
+fn can_delete_file(file_path: &PathBuf) -> bool {
+    // 1. can delete?
+    //      user needs to have rwx for the parent dir
+    let parent = match file_path.parent() {
+        Some(v) => v,
+        None => return false,
+    };
+
+    if !is_writable_dir(&parent.to_path_buf()) {
+        return false;
+    }
+
+    // 1. can read?
+    // 1. can modify?
+    let file_writable: libc::c_int;
+    let location = file_path.to_str().unwrap();
+    let path_cstr = match CString::new(location) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    unsafe {
+        file_writable = libc::access(path_cstr.as_ptr(), libc::R_OK | libc::W_OK);
+    }
+
+    if file_writable != 0 {
+        return false;
+    }
+
+    true
+}
+
+// todo: IMPLEMENT
+fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
+    Ok(1000)
+}
+
 struct Device {
     dev_num: DeviceNumber,
     dev_name: Option<String>,
@@ -624,7 +775,7 @@ impl Device {
     }
 
     fn resolve_mount(&mut self) -> Result<(), Box<dyn Error>> {
-        let mountinfo = fs::read_to_string("/proc/self/mountinfo").unwrap();
+        let mountinfo = read_to_string("/proc/self/mountinfo").unwrap();
         let mounts: Vec<&str> = mountinfo.lines().collect();
         for mount in mounts {
             let fields: Vec<&str> = mount.split_whitespace().collect();
@@ -688,7 +839,7 @@ fn msg_err<T>(msg: T) -> ()
 where
     T: std::fmt::Display,
 {
-    let binary_name = &*BINARY_NAME;
+    let binary_name = env!("CARGO_PKG_NAME");
     eprintln!("{binary_name}: {msg}")
 }
 
@@ -696,6 +847,6 @@ fn msg<T>(msg: T) -> ()
 where
     T: std::fmt::Display,
 {
-    let binary_name = &*BINARY_NAME;
+    let binary_name = env!("CARGO_PKG_NAME");
     println!("{binary_name}: {msg}")
 }
