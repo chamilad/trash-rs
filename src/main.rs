@@ -518,12 +518,6 @@ impl TrashDirectory {
     }
 }
 
-// enum FileType {
-//     File,
-//     Dir,
-//     SymLink,
-// }
-
 struct TrashFile {
     original_file: PathBuf,
     // file_type: FileType,
@@ -537,17 +531,8 @@ impl TrashFile {
             return Err(Box::<dyn Error>::from("file path is not absolute"));
         }
 
-        // let file_type = match original_file.is_dir() {
-        //     true => FileType::Dir,
-        //     false => match original_file.is_symlink() {
-        //         true => FileType::SymLink,
-        //         false => FileType::File,
-        //     },
-        // };
-
         Ok(TrashFile {
             original_file,
-            // file_type,
             files_entry: None,
             trashinfo_entry: None,
         })
@@ -879,8 +864,6 @@ mod tests {
             Ok(v) => v,
             Err(_) => return,
         };
-
-        // let current_path = PathBuf::from("/home/chamilad/Downloads/");
 
         let dir_size = match get_dir_size(&current_path) {
             Ok(v) => v,
