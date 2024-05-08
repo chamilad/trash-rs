@@ -3,7 +3,7 @@ use rand::Rng;
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
-use std::fs::{copy, create_dir, read_to_string, rename, File, OpenOptions};
+use std::fs::{copy, create_dir, read_dir, read_to_string, rename, File, OpenOptions};
 use std::io::{stdin, stdout, Write};
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
@@ -553,7 +553,6 @@ impl TrashFile {
         })
     }
 
-    // todo: make this atomic across system
     fn create_trashinfo(&self, trash_dir: &TrashDirectory) -> Result<&PathBuf, Box<dyn Error>> {
         if self.files_entry == None || self.trashinfo_entry == None {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
@@ -745,9 +744,28 @@ fn can_delete_file(file_path: &PathBuf) -> bool {
     true
 }
 
-// todo: IMPLEMENT
+// symlinks excluded
+// todo: not the exact same output as du -B1, a couple megs of difference
 fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
-    Ok(1000)
+    let mut total_size: u64 = 0;
+    if path.is_dir() {
+        for child in read_dir(path)? {
+            let child = child?;
+            let child_path = child.path();
+            if child_path.is_dir() {
+                println!("checking dir: {}", child_path.display());
+                total_size += get_dir_size(&child_path)?;
+            } else if child_path.is_file() {
+                println!("checking file: {}", child_path.display());
+                // total_size += child_path.metadata()?.len();
+                total_size += child_path.metadata()?.st_blocks() * 512;
+            }
+        }
+    } else {
+        return Err(Box::<dyn Error>::from("path is not a directory"));
+    }
+
+    Ok(total_size)
 }
 
 struct Device {
@@ -849,4 +867,26 @@ where
 {
     let binary_name = env!("CARGO_PKG_NAME");
     println!("{binary_name}: {msg}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_dir_size() {
+        let current_path = match env::current_dir() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        // let current_path = PathBuf::from("/home/chamilad/Downloads/");
+
+        let dir_size = match get_dir_size(&current_path) {
+            Ok(v) => v,
+            Err(_) => 0,
+        };
+
+        println!("returned: {}: {dir_size}", current_path.display());
+    }
 }
