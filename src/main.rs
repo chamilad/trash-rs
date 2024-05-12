@@ -150,8 +150,6 @@ fn main() {
     }
 }
 
-// todo: support merged flags ex: -iv
-// todo: don't error out for unsupported rm flags, maybe a msg in stderr and continue
 fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
     // need at least one arg
     if args.len() == 0 {
@@ -163,23 +161,33 @@ fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
     let mut help: bool = false;
     let mut version: bool = false;
     let mut file_names: Vec<String> = vec![];
+    let mut eoo = false; // -- is end of options
     for arg in args {
-        match arg.as_str() {
-            "-i" | "--interactive" => interactive = true,
-            "-v" | "--verbose" => verbose = true,
-            "-h" | "--help" => help = true,
-            "-V" | "--version" => version = true,
-            _ => {
-                if arg.starts_with("-") {
-                    return Err(Box::<dyn Error>::from(format!("invalid option -- '{arg}'")));
+        if eoo {
+            file_names.push(arg);
+        } else {
+            match arg.as_str() {
+                "--" => eoo = true,
+                "-i" | "--interactive" => interactive = true,
+                "-v" | "--verbose" => verbose = true,
+                "-h" | "--help" => help = true,
+                "-V" | "--version" => version = true,
+                "-iv" | "-vi" => {
+                    verbose = true;
+                    interactive = true;
                 }
+                _ => {
+                    if arg.starts_with("-") {
+                        return Err(Box::<dyn Error>::from(format!("invalid option -- '{arg}'")));
+                    }
 
-                file_names.push(arg);
+                    file_names.push(arg);
+                }
             }
         }
     }
 
-    if file_names.len() == 0 && (interactive || verbose) {
+    if file_names.len() == 0 && !(help || version) {
         return Err(Box::<dyn Error>::from("missing operand"));
     }
 
@@ -192,7 +200,6 @@ fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
     })
 }
 
-// todo: test for files that start with -, ex: -foo
 #[derive(Debug, Clone)]
 struct Args {
     interactive: bool, // -i, --interactive
@@ -413,7 +420,6 @@ impl TrashDirectory {
             let trash_file_name = trash_file_path.file_name().unwrap().to_str().unwrap();
             let entries: Vec<&str> = existing_dir_sizes.lines().collect();
             for entry in entries {
-                eprintln!("checking dirsizes entry: {}", entry);
                 let fields: Vec<&str> = entry.split_whitespace().collect();
                 if fields.len() == 3 {
                     let f = match decode(fields[2]) {
@@ -784,10 +790,8 @@ fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
             let child = child?;
             let child_path = child.path();
             if child_path.is_dir() {
-                println!("checking dir: {}", child_path.display());
                 total_size += get_dir_size(&child_path)?;
             } else if child_path.is_file() {
-                println!("checking file: {}", child_path.display());
                 total_size += child_path.metadata()?.st_blocks() * 512;
             }
         }
@@ -903,18 +907,128 @@ where
 mod tests {
     use super::*;
 
+    // #[test]
+    // fn test_get_dir_size() {
+    //     let current_path = match env::current_dir() {
+    //         Ok(v) => v,
+    //         Err(_) => return,
+    //     };
+
+    //     let dir_size = match get_dir_size(&current_path) {
+    //         Ok(v) => v,
+    //         Err(_) => 0,
+    //     };
+
+    //     println!("returned: {}: {dir_size}", current_path.display());
+    // }
+
     #[test]
-    fn test_get_dir_size() {
-        let current_path = match env::current_dir() {
-            Ok(v) => v,
-            Err(_) => return,
-        };
+    fn test_parse_args() {
+        let i: Vec<String> = vec![String::from("-iv"), String::from("somefile")];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(a.interactive && a.verbose && !a.help && !a.version);
+        assert!(a.file_names.len() == 1);
 
-        let dir_size = match get_dir_size(&current_path) {
-            Ok(v) => v,
-            Err(_) => 0,
-        };
+        let i: Vec<String> = vec![String::from("-vi"), String::from("somefile")];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(a.interactive && a.verbose && !a.help && !a.version);
 
-        println!("returned: {}: {dir_size}", current_path.display());
+        let i: Vec<String> = vec![String::from("--verbose"), String::from("somefile")];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(!a.interactive && a.verbose && !a.help && !a.version);
+
+        let i: Vec<String> = vec![String::from("-h")];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(!a.interactive && !a.verbose && a.help && !a.version);
+
+        let i: Vec<String> = vec![String::from("-V")];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(!a.interactive && !a.verbose && !a.help && a.version);
+
+        let i: Vec<String> = vec![
+            String::from("-iv"),
+            String::from("--"),
+            String::from("-somefile"),
+        ];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(a.interactive && a.verbose && !a.help && !a.version);
+        assert!(a.file_names[0] == "-somefile");
+
+        let i: Vec<String> = vec![
+            String::from("--"),
+            String::from("-iv"),
+            String::from("-somefile"),
+        ];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(!a.interactive && !a.verbose && !a.help && !a.version);
+        assert!(a.file_names[0] == "-iv");
+        assert!(a.file_names[1] == "-somefile");
+
+        let i: Vec<String> = vec![
+            String::from("somefile"),
+            String::from("--"),
+            String::from("-somefile"),
+        ];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(!a.interactive && !a.verbose && !a.help && !a.version);
+        assert!(a.file_names[0] == "somefile");
+        assert!(a.file_names[1] == "-somefile");
+
+        let i: Vec<String> = vec![
+            String::from("-iv"),
+            String::from("somefile"),
+            String::from("--"),
+            String::from("-somefile"),
+        ];
+        let args = parse_args(i);
+        assert!(args.is_ok());
+        let a = args.unwrap();
+        assert!(a.interactive && a.verbose && !a.help && !a.version);
+        assert!(a.file_names[0] == "somefile");
+        assert!(a.file_names[1] == "-somefile");
+    }
+
+    #[test]
+    fn test_parse_args_err() {
+        let i: Vec<String> = vec![];
+        let args = parse_args(i);
+        assert!(args.is_err());
+
+        // need to specify a file if not help or version
+        let i: Vec<String> = vec![String::from("-v")];
+        let args = parse_args(i);
+        assert!(args.is_err());
+
+        let i: Vec<String> = vec![String::from("-G")];
+        let args = parse_args(i);
+        assert!(args.is_err());
+
+        // can't use help or version with other flags
+        let i: Vec<String> = vec![String::from("-ivh")];
+        let args = parse_args(i);
+        assert!(args.is_err());
+        let i: Vec<String> = vec![String::from("-ivV")];
+        let args = parse_args(i);
+        assert!(args.is_err());
+
+        let i: Vec<String> = vec![String::from("--")];
+        let args = parse_args(i);
+        assert!(args.is_err());
     }
 }
