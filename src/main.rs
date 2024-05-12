@@ -9,7 +9,7 @@ use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use urlencoding::encode;
+use urlencoding::{decode, encode};
 
 use libc;
 
@@ -335,6 +335,12 @@ impl TrashDirectory {
     }
 
     fn update_dir_sizes_entry(&self, trash_file: &TrashFile) -> Result<(), Box<dyn Error>> {
+        if trash_file.files_entry.is_none() {
+            return Err(Box::<dyn Error>::from(
+                "attempt to update directorysizes for incomplete trash operation",
+            ));
+        }
+
         let trashed_file = trash_file.files_entry.clone().unwrap();
         if !trashed_file.is_dir() {
             return Ok(());
@@ -391,19 +397,58 @@ impl TrashDirectory {
         let target_file_path = tool_temp_dir.join(format!("directorysizes-{random_nu}"));
 
         //todo: need to check for permissions before this is done
-        let mut f = if current_dir_sizes.exists() {
-            copy(&current_dir_sizes, &target_file_path).map_err(|e| {
-                return Box::<dyn Error>::from(format!(
-                    "couldn't create new directorysizes file: {e}"
-                ));
-            })?;
-            File::open(&target_file_path)?
+        let mut existing_content = if current_dir_sizes.exists() {
+            // cleanup existing entries if other implementations do not
+            // support this part of the spec
+            let mut existing_content: String = String::new();
+            let existing_dir_sizes = read_to_string(&current_dir_sizes.to_str().unwrap())?;
+            let trash_file_path = trash_file.files_entry.clone().unwrap();
+            let trash_file_name = trash_file_path.file_name().unwrap().to_str().unwrap();
+            let entries: Vec<&str> = existing_dir_sizes.lines().collect();
+            for entry in entries {
+                eprintln!("checking dirsizes entry: {}", entry);
+                let fields: Vec<&str> = entry.split_whitespace().collect();
+                if fields.len() == 3 {
+                    let f = match decode(fields[2]) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // the directory being trashed could be one that was
+                    // trashed before and then restored by an implementation
+                    // that does not use directorysizes. In that case, the dir
+                    // name for the files directory could be the same as the
+                    // previous one. For this case, the dirsizes entry should
+                    // not be preserved. The next condition which checks for
+                    // existence isn't going to be useful, because at this
+                    // point, the directory has already been moved
+                    // to the trash bin.
+                    if trash_file_name == f {
+                        eprintln!(
+                            "dirsize entry is the same one being trashed: {}",
+                            &trash_file_name
+                        );
+                        continue;
+                    }
+
+                    let f_path = self.files.join(f.into_owned());
+                    if f_path.exists() {
+                        existing_content += &format!("{entry}\n").to_string();
+                    } else {
+                        eprintln!("dirsize entry doesn't exist: {}", f_path.display());
+                    }
+                }
+            }
+
+            existing_content
         } else {
-            File::create(&target_file_path)?
+            String::new()
         };
 
         // update with the latest entry
-        if let Err(e) = writeln!(f, "{size} {mtime_epoch} {encoded_dir_name}") {
+        existing_content += &format!("{size} {mtime_epoch} {encoded_dir_name}\n").to_string();
+        let mut f = File::create(&target_file_path)?;
+        if let Err(e) = f.write_all(existing_content.as_bytes()) {
             return Err(Box::<dyn Error>::from(format!(
                 "couldn't update directorysizes: {e}"
             )));
@@ -554,6 +599,8 @@ impl TrashFile {
             }
         };
 
+        let file_path_encoded = &encode(file_path_key);
+
         let info_entry = self.trashinfo_entry.as_ref().unwrap();
         if info_entry.exists() {
             return Err(Box::<dyn Error>::from("info entry already exists"));
@@ -566,7 +613,7 @@ impl TrashFile {
 Path={}
 DeletionDate={}
 "#,
-            file_path_key, deletion_date
+            file_path_encoded, deletion_date
         );
 
         let mut f = match OpenOptions::new()
