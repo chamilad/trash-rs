@@ -3,7 +3,7 @@ use rand::Rng;
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
-use std::fs::{copy, create_dir, read_dir, read_to_string, rename, File, OpenOptions};
+use std::fs::{create_dir, read_dir, read_to_string, rename, File, OpenOptions};
 use std::io::{stdin, stdout, Write};
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
@@ -347,6 +347,15 @@ impl TrashDirectory {
         }
 
         let current_dir_sizes = self.home.join("directorysizes");
+        // this will skip updating dirsizes in topdir trash created by admin
+        // (scenario 1). It's easier to keep this behavior consistent than being
+        // dependent on dir permissions that the user will or will not know about
+        if !can_delete_file(&current_dir_sizes) {
+            return Err(Box::<dyn Error>::from(
+                "not enough permissions to edit directorysizes",
+            ));
+        }
+
         if current_dir_sizes.exists() && !current_dir_sizes.is_file() {
             let p = current_dir_sizes.to_str().unwrap();
             return Err(Box::<dyn Error>::from(format!(
@@ -378,11 +387,10 @@ impl TrashDirectory {
         let dir_name = trashed_file.file_name().unwrap().to_str().unwrap();
         let encoded_dir_name = encode(dir_name);
 
-        // copy the current file to tmp
         let mut rng = rand::thread_rng();
         let random_nu = rng.gen_range(100000000..999999999);
 
-        // downstream rename will not work across different mount points
+        // below rename will not work across different mount points
         // so the temp file has to be made on the same parition
         let temp_dir = if self.root_type == TrashRootType::Home {
             env::temp_dir()
@@ -396,10 +404,9 @@ impl TrashDirectory {
 
         let target_file_path = tool_temp_dir.join(format!("directorysizes-{random_nu}"));
 
-        //todo: need to check for permissions before this is done
+        // cleanup existing entries if other implementations do not support this
+        // part of the spec. If this isn't done, directorysizes keeps on growing
         let mut existing_content = if current_dir_sizes.exists() {
-            // cleanup existing entries if other implementations do not
-            // support this part of the spec
             let mut existing_content: String = String::new();
             let existing_dir_sizes = read_to_string(&current_dir_sizes.to_str().unwrap())?;
             let trash_file_path = trash_file.files_entry.clone().unwrap();
@@ -424,18 +431,12 @@ impl TrashDirectory {
                     // point, the directory has already been moved
                     // to the trash bin.
                     if trash_file_name == f {
-                        eprintln!(
-                            "dirsize entry is the same one being trashed: {}",
-                            &trash_file_name
-                        );
                         continue;
                     }
 
                     let f_path = self.files.join(f.into_owned());
                     if f_path.exists() {
                         existing_content += &format!("{entry}\n").to_string();
-                    } else {
-                        eprintln!("dirsize entry doesn't exist: {}", f_path.display());
                     }
                 }
             }
@@ -746,8 +747,7 @@ fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf, Bo
 }
 
 fn can_delete_file(file_path: &PathBuf) -> bool {
-    // 1. can delete?
-    //      user needs to have rwx for the parent dir
+    // 1. can delete? - user needs to have rwx for the parent dir
     let parent = match file_path.parent() {
         Some(v) => v,
         None => return false,
@@ -757,8 +757,7 @@ fn can_delete_file(file_path: &PathBuf) -> bool {
         return false;
     }
 
-    // 1. can read?
-    // 1. can modify?
+    // 1. can read and modify?
     let file_writable: libc::c_int;
     let location = file_path.to_str().unwrap();
     let path_cstr = match CString::new(location) {
@@ -789,7 +788,6 @@ fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
                 total_size += get_dir_size(&child_path)?;
             } else if child_path.is_file() {
                 println!("checking file: {}", child_path.display());
-                // total_size += child_path.metadata()?.len();
                 total_size += child_path.metadata()?.st_blocks() * 512;
             }
         }
