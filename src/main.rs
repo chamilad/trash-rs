@@ -3,12 +3,11 @@ use rand::Rng;
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
-use std::fs::{create_dir, create_dir_all, read_dir, read_to_string, rename, File, OpenOptions};
+use std::fs::{create_dir, read_dir, read_to_string, rename, File, OpenOptions};
 use std::io::{stdin, stdout, Write};
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::SystemTime;
-use std::process::Command;
 
 use urlencoding::{decode, encode};
 
@@ -915,6 +914,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::fs::remove_dir_all;
+    use std::fs::create_dir_all;
+    use std::process::Command;
 
     use super::*;
 
