@@ -3,11 +3,12 @@ use rand::Rng;
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
-use std::fs::{create_dir, read_dir, read_to_string, rename, File, OpenOptions};
+use std::fs::{create_dir, create_dir_all, read_dir, read_to_string, rename, File, OpenOptions};
 use std::io::{stdin, stdout, Write};
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::SystemTime;
+use std::process::Command;
 
 use urlencoding::{decode, encode};
 
@@ -782,17 +783,25 @@ fn can_delete_file(file_path: &PathBuf) -> bool {
 }
 
 // symlinks excluded
-// todo: not the exact same output as du -B1, a couple megs of difference
+// same as du -B1 command
+// spec: The size is calculated as the disk space used by the directory and
+// its contents, that is, the size of the blocks, in bytes (in the same way
+// as the `du -B1` command calculates).
 fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
     let mut total_size: u64 = 0;
     if path.is_dir() {
+        // calculate dir metadata size
+        let block_count = path.metadata()?.st_blocks();
+        total_size += block_count * 512;
+
         for child in read_dir(path)? {
             let child = child?;
             let child_path = child.path();
             if child_path.is_dir() {
                 total_size += get_dir_size(&child_path)?;
-            } else if child_path.is_file() {
-                total_size += child_path.metadata()?.st_blocks() * 512;
+            } else if child_path.is_file() && !child_path.is_symlink() {
+                let block_count = child_path.metadata()?.st_blocks();
+                total_size += block_count * 512;
             }
         }
     } else {
@@ -905,22 +914,36 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::fs::remove_dir_all;
+
     use super::*;
 
-    // #[test]
-    // fn test_get_dir_size() {
-    //     let current_path = match env::current_dir() {
-    //         Ok(v) => v,
-    //         Err(_) => return,
-    //     };
+    #[test]
+    fn test_get_dir_size() {
+        let temp_dir = env::temp_dir();
+        let time_now = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(v) => v.as_secs(),
+            Err(_) => panic!("prepare for war"),
+        };
+        let temp_test_dir = temp_dir.join("trash-rs").join(format!("{}", time_now));
+        let test_dir_1 = temp_test_dir.join("test-1");
+        let test_dir_2 = temp_test_dir.join("test-2");
+        let _ = create_dir_all(test_dir_1.clone());
+        let _ = create_dir_all(test_dir_2);
 
-    //     let dir_size = match get_dir_size(&current_path) {
-    //         Ok(v) => v,
-    //         Err(_) => 0,
-    //     };
+        let test_file = test_dir_1.join("test_file");
+        let test_file_size = 10*1024*1024; // 10MB
+        let mut f = File::create(test_file).expect("couldn't create test file");
+        let dummy_buffer = vec![0u8; test_file_size];
+        let _ = f.write_all(&dummy_buffer);
 
-    //     println!("returned: {}: {dir_size}", current_path.display());
-    // }
+        let op = Command::new("sh").arg("-c").arg(format!("du -B1 -d 0 {} | cut -f1", temp_test_dir.display())).output().expect("du failed");
+        let du_size = String::from_utf8(op.stdout).unwrap().trim().parse::<u64>().unwrap();
+        let dir_size = get_dir_size(&temp_test_dir).unwrap();
+        assert!(du_size == dir_size);
+
+        let _ = remove_dir_all(temp_test_dir);
+    }
 
     #[test]
     fn test_parse_args() {
