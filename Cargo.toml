@@ -18,3 +18,15 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[lib]
+name = "libtrash"
+path = "src/lib.rs"
+
+[[bin]]
+name = "trash"
+path = "src/bin/trash.rs"
+
+[[bin]]
+name = "restore"
+path = "src/bin/restore.rs"

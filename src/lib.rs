@@ -4,7 +4,7 @@ use std::env;
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::{create_dir, read_dir, read_to_string, rename, File, OpenOptions};
-use std::io::{stdin, stdout, Write};
+use std::io::Write;
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -13,221 +13,29 @@ use urlencoding::{decode, encode};
 
 use libc;
 
-const EXITCODE_OK: i32 = 0;
-const EXITCODE_INVALID_ARGS: i32 = 1;
-const EXITCODE_UNSUPPORTED: i32 = 2;
-const EXITCODE_EXTERNAL: i32 = 255;
-
 // Does NOT support trashing files from external mounts to user's trash dir
 // Does NOT trash a file from external mounts to home if topdirs cannot be used
-fn main() {
-    // skip the binary name, and parse rest of the args
-    let args: Vec<String> = env::args().skip(1).collect();
-    let args_conf = match parse_args(args) {
-        Ok(v) => v,
-        Err(e) => {
-            msg_err(format!("{e}"));
-            msg_err("try '-h' for more information.");
-            std::process::exit(EXITCODE_INVALID_ARGS);
-        }
-    };
 
-    if args_conf.version {
-        let version = env!("CARGO_PKG_VERSION");
-        let binary_name = env!("CARGO_PKG_NAME");
-        println!("{binary_name} ({version})");
-        std::process::exit(EXITCODE_OK);
-    }
-
-    if args_conf.help {
-        println!("help text here todo");
-        std::process::exit(EXITCODE_OK);
-    }
-
-    for file_name in args_conf.file_names {
-        // get absolute path and check file exists
-        let abs_file = match std::fs::canonicalize(&file_name) {
-            Ok(v) => v,
-            Err(_) => {
-                msg_err(format!(
-                    "cannot trash '{file_name}': no such file or directory"
-                ));
-                std::process::exit(EXITCODE_INVALID_ARGS);
-            }
-        };
-
-        // When trashing a file or directory, the implementation SHOULD
-        // check whether the user has the necessary permissions to delete it,
-        // before starting the trashing operation itself.
-        //
-        // can refuse trashing because of lack of more permissions to the file
-        if !can_delete_file(&abs_file) {
-            msg_err(format!(
-                "cannot trash '{file_name}': not enough permissions to delete the file"
-            ));
-            std::process::exit(EXITCODE_UNSUPPORTED);
-        }
-
-        let trash_dir = match TrashDirectory::resolve_for_file(&abs_file, args_conf.verbose) {
-            Ok(v) => v,
-            Err(e) => {
-                msg_err(format!(
-                    "cannot trash '{file_name}': cannot resolve trash directory: {e}"
-                ));
-                std::process::exit(EXITCODE_UNSUPPORTED);
-            }
-        };
-
-        if abs_file.starts_with(&trash_dir.home) {
-            msg_err(format!("trashing the trash is not supported"));
-            std::process::exit(EXITCODE_UNSUPPORTED);
-        }
-
-        let mut trash_file = match TrashFile::new(abs_file) {
-            Ok(v) => v,
-            Err(e) => {
-                msg_err(format!("cannot trash '{file_name}': {e}"));
-                std::process::exit(EXITCODE_UNSUPPORTED);
-            }
-        };
-
-        match trash_dir.generate_trash_entry_names(&mut trash_file) {
-            Ok(_) => (),
-            Err(e) => {
-                msg_err(format!("cannot trash '{file_name}': {e}"));
-                std::process::exit(EXITCODE_UNSUPPORTED);
-            }
-        }
-
-        if args_conf.interactive {
-            print!("trash file '{file_name}'? (y/n): ");
-            match stdout().flush() {
-                Ok(_) => (),
-                Err(e) => {
-                    msg_err(format!("input/output error: {e}"));
-                    std::process::exit(EXITCODE_EXTERNAL);
-                }
-            };
-
-            let mut confirmation = String::new();
-            match stdin().read_line(&mut confirmation) {
-                Ok(_) => (),
-                Err(e) => {
-                    msg_err(format!("input/output error: {e}"));
-                    std::process::exit(EXITCODE_EXTERNAL);
-                }
-            };
-            if confirmation.strip_suffix("\n").unwrap().to_lowercase() != "y" {
-                if args_conf.verbose {
-                    msg_err(format!("not trashing the file"));
-                }
-
-                std::process::exit(EXITCODE_OK);
-            }
-        }
-
-        match trash_file.create_trashinfo(&trash_dir) {
-            Ok(_) => (),
-            Err(e) => {
-                msg_err(format!("cannot trash '{file_name}': {e}"));
-                std::process::exit(EXITCODE_UNSUPPORTED);
-            }
-        };
-
-        match trash_file.trash() {
-            Ok(_) => (),
-            Err(e) => {
-                msg_err(format!("cannot trash '{file_name}': {e}"));
-                std::process::exit(EXITCODE_UNSUPPORTED);
-            }
-        }
-
-        if let Err(e) = trash_dir.update_dir_sizes_entry(&trash_file) {
-            if args_conf.verbose {
-                msg_err(format!("error while updating directorysizes: {e}"));
-            }
-        }
-    }
-}
-
-fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
-    // need at least one arg
-    if args.len() == 0 {
-        return Err(Box::<dyn Error>::from("missing operand"));
-    }
-
-    let mut interactive: bool = false;
-    let mut verbose: bool = false;
-    let mut help: bool = false;
-    let mut version: bool = false;
-    let mut file_names: Vec<String> = vec![];
-    let mut eoo = false; // -- is end of options
-    for arg in args {
-        if eoo {
-            file_names.push(arg);
-        } else {
-            match arg.as_str() {
-                "--" => eoo = true,
-                "-i" | "--interactive" => interactive = true,
-                "-v" | "--verbose" => verbose = true,
-                "-h" | "--help" => help = true,
-                "-V" | "--version" => version = true,
-                "-iv" | "-vi" => {
-                    verbose = true;
-                    interactive = true;
-                }
-                _ => {
-                    if arg.starts_with("-") {
-                        return Err(Box::<dyn Error>::from(format!("invalid option -- '{arg}'")));
-                    }
-
-                    file_names.push(arg);
-                }
-            }
-        }
-    }
-
-    if file_names.len() == 0 && !(help || version) {
-        return Err(Box::<dyn Error>::from("missing operand"));
-    }
-
-    Ok(Args {
-        interactive,
-        verbose,
-        help,
-        version,
-        file_names,
-    })
-}
-
-#[derive(Debug, Clone)]
-struct Args {
-    interactive: bool, // -i, --interactive
-    verbose: bool,     // -v, --verbose
-    help: bool,        // -h, --help
-    version: bool,     // -V, --version
-    file_names: Vec<String>,
-}
 
 #[derive(Eq, PartialEq)]
-enum TrashRootType {
+pub enum TrashRootType {
     Home,        // trash directory is in user's home directory
     TopDirAdmin, // trash directory is the .Trash/{euid} directory in the top directory for the mount the file exists in
     TopDirUser, // trash directory is the .Trash-{euid} directory in the top directory for the mount the file exists in
 }
 
-struct TrashDirectory {
-    device: Device,
-    home: PathBuf,
-    files: PathBuf,
-    info: PathBuf,
-    root_type: TrashRootType,
+pub struct TrashDirectory {
+    pub device: Device,
+    pub home: PathBuf,
+    pub files: PathBuf,
+    pub info: PathBuf,
+    pub root_type: TrashRootType,
 }
 
 impl TrashDirectory {
     // derive trash directory according to trash spec
     // todo: support expunge dir (not sure how to schedule job for permanent deletion)
-    fn resolve_for_file(
+    pub fn resolve_for_file(
         abs_file_path: &PathBuf,
         verbose: bool,
     ) -> Result<TrashDirectory, Box<dyn Error>> {
@@ -308,7 +116,7 @@ impl TrashDirectory {
         Ok(trash_dir)
     }
 
-    fn generate_trash_entry_names(&self, trash_file: &mut TrashFile) -> Result<(), Box<dyn Error>> {
+    pub fn generate_trash_entry_names(&self, trash_file: &mut TrashFile) -> Result<(), Box<dyn Error>> {
         let stripped_file_name = trash_file
             .original_file
             .file_name()
@@ -341,7 +149,7 @@ impl TrashDirectory {
         ));
     }
 
-    fn update_dir_sizes_entry(&self, trash_file: &TrashFile) -> Result<(), Box<dyn Error>> {
+    pub fn update_dir_sizes_entry(&self, trash_file: &TrashFile) -> Result<(), Box<dyn Error>> {
         if trash_file.files_entry.is_none() {
             return Err(Box::<dyn Error>::from(
                 "attempt to update directorysizes for incomplete trash operation",
@@ -466,7 +274,7 @@ impl TrashDirectory {
         Ok(())
     }
 
-    fn get_trashable_file_name(stripped_file_name: String, idx: u32) -> String {
+    pub fn get_trashable_file_name(stripped_file_name: String, idx: u32) -> String {
         // nautilus trash files when duplicated start from suffix 2
         if idx < 2 {
             return stripped_file_name;
@@ -482,7 +290,7 @@ impl TrashDirectory {
         format!("{}.{}", stripped_file_name, idx)
     }
 
-    fn try_topdir_admin_trash(
+    pub fn try_topdir_admin_trash(
         top_dir: PathBuf,
         euid: libc::uid_t,
     ) -> Result<PathBuf, Box<dyn Error>> {
@@ -544,7 +352,7 @@ impl TrashDirectory {
         }
     }
 
-    fn try_topdir_user_trash(
+    pub fn try_topdir_user_trash(
         top_dir: PathBuf,
         euid: libc::uid_t,
     ) -> Result<PathBuf, Box<dyn Error>> {
@@ -570,7 +378,7 @@ impl TrashDirectory {
     }
 }
 
-struct TrashFile {
+pub struct TrashFile {
     original_file: PathBuf,
     // file_type: FileType,
     files_entry: Option<PathBuf>,
@@ -578,7 +386,7 @@ struct TrashFile {
 }
 
 impl TrashFile {
-    fn new(original_file: PathBuf) -> Result<TrashFile, Box<dyn Error>> {
+    pub fn new(original_file: PathBuf) -> Result<TrashFile, Box<dyn Error>> {
         if !original_file.is_absolute() {
             return Err(Box::<dyn Error>::from("file path is not absolute"));
         }
@@ -590,7 +398,7 @@ impl TrashFile {
         })
     }
 
-    fn create_trashinfo(&self, trash_dir: &TrashDirectory) -> Result<&PathBuf, Box<dyn Error>> {
+    pub fn create_trashinfo(&self, trash_dir: &TrashDirectory) -> Result<&PathBuf, Box<dyn Error>> {
         if self.files_entry == None || self.trashinfo_entry == None {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
@@ -648,7 +456,7 @@ DeletionDate={}
         Ok(info_entry)
     }
 
-    fn trash(&self) -> Result<&PathBuf, Box<dyn Error>> {
+    pub fn trash(&self) -> Result<&PathBuf, Box<dyn Error>> {
         if self.files_entry == None || self.trashinfo_entry == None {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
@@ -661,7 +469,7 @@ DeletionDate={}
 
 // retrieve os defined home directory. $HOME MUST be defined as of now.
 // todo: lookup passwd for home dir entry if $HOME isn't defined
-fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
+pub fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
     let home_dir = env::var("HOME")?;
     let home_path = PathBuf::from(&home_dir);
 
@@ -669,7 +477,7 @@ fn get_home_dir() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 // retrieve XDG_DATA_HOME value, from env var or falling back to spec default
-fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
+pub fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
     // if XDG_DATA_HOME is not defined, fallback to $HOME/.local/share
     let xdg_data_home = match env::var("XDG_DATA_HOME") {
         Ok(v) => PathBuf::from(&v),
@@ -688,7 +496,7 @@ fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
 // alternative is to use faccessat() with AT_EACCESS.
 // the decision here is to whether allow sudo invocation to trash a file that
 // a user doesn't have access to
-fn is_writable_dir(path: &PathBuf) -> bool {
+pub fn is_writable_dir(path: &PathBuf) -> bool {
     let writable: libc::c_int;
     let dir_location = path.to_str().unwrap();
     let path_cstr = match CString::new(dir_location) {
@@ -712,7 +520,7 @@ fn is_writable_dir(path: &PathBuf) -> bool {
 // make sure the specified path exists as a directory.
 // if the path doesn't exist, the directory is created.
 // if it exists and is not a directory, an Error is returned
-fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
+pub fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
     match path.try_exists() {
         Ok(true) => {
             if !path.is_dir() {
@@ -743,7 +551,7 @@ fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
 }
 
 // returns a PathBuf of a relative path of child against parent
-fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+pub fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
     if !child.is_absolute() || !parent.is_absolute() {
         return Err(Box::<dyn Error>::from("require absolute paths"));
     }
@@ -752,7 +560,7 @@ fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf, Bo
     Ok(stripped.to_path_buf())
 }
 
-fn can_delete_file(file_path: &PathBuf) -> bool {
+pub fn can_delete_file(file_path: &PathBuf) -> bool {
     // 1. can delete? - user needs to have rwx for the parent dir
     let parent = match file_path.parent() {
         Some(v) => v,
@@ -786,7 +594,7 @@ fn can_delete_file(file_path: &PathBuf) -> bool {
 // spec: The size is calculated as the disk space used by the directory and
 // its contents, that is, the size of the blocks, in bytes (in the same way
 // as the `du -B1` command calculates).
-fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
+pub fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
     let mut total_size: u64 = 0;
     if path.is_dir() {
         // calculate dir metadata size
@@ -810,7 +618,7 @@ fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
     Ok(total_size)
 }
 
-struct Device {
+pub struct Device {
     dev_num: DeviceNumber,
     dev_name: Option<String>,
     mount_root: Option<PathBuf>,
@@ -824,7 +632,7 @@ impl Device {
     const PROCINFO_FIELD_MOUNT_POINT: usize = 4;
     const PROCINFO_FIELD_DEV_NAME: usize = 9;
 
-    fn for_path(abs_file_path: &PathBuf) -> Result<Device, Box<dyn Error>> {
+    pub fn for_path(abs_file_path: &PathBuf) -> Result<Device, Box<dyn Error>> {
         let dev_id = DeviceNumber::for_path(abs_file_path)?;
         Ok(Device {
             dev_num: dev_id,
@@ -834,7 +642,7 @@ impl Device {
         })
     }
 
-    fn resolve_mount(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn resolve_mount(&mut self) -> Result<(), Box<dyn Error>> {
         let mountinfo = read_to_string("/proc/self/mountinfo").unwrap();
         let mounts: Vec<&str> = mountinfo.lines().collect();
         for mount in mounts {
@@ -860,7 +668,7 @@ impl Device {
     }
 }
 
-struct DeviceNumber {
+pub struct DeviceNumber {
     dev_id: u64,
     major: u32,
     minor: u32,
@@ -873,7 +681,7 @@ impl DeviceNumber {
     // a 32-bit quantity with 12 bits set aside for the major number and 20 for the minor
     // number. Your code should, of course, never make any assumptions about the inter-
     // nal organization of device numbers;
-    fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
+   pub  fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
         let f_metadata = abs_file_path.metadata()?;
         let file_device_id = f_metadata.st_dev();
 
@@ -895,7 +703,7 @@ impl DeviceNumber {
     }
 }
 
-fn msg_err<T>(msg: T) -> ()
+pub fn msg_err<T>(msg: T) -> ()
 where
     T: std::fmt::Display,
 {
@@ -903,7 +711,7 @@ where
     eprintln!("{binary_name}: {msg}")
 }
 
-fn msg<T>(msg: T) -> ()
+pub fn msg<T>(msg: T) -> ()
 where
     T: std::fmt::Display,
 {
@@ -944,115 +752,5 @@ mod tests {
         assert!(du_size == dir_size);
 
         let _ = remove_dir_all(temp_test_dir);
-    }
-
-    #[test]
-    fn test_parse_args() {
-        let i: Vec<String> = vec![String::from("-iv"), String::from("somefile")];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(a.interactive && a.verbose && !a.help && !a.version);
-        assert!(a.file_names.len() == 1);
-
-        let i: Vec<String> = vec![String::from("-vi"), String::from("somefile")];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(a.interactive && a.verbose && !a.help && !a.version);
-
-        let i: Vec<String> = vec![String::from("--verbose"), String::from("somefile")];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(!a.interactive && a.verbose && !a.help && !a.version);
-
-        let i: Vec<String> = vec![String::from("-h")];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(!a.interactive && !a.verbose && a.help && !a.version);
-
-        let i: Vec<String> = vec![String::from("-V")];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(!a.interactive && !a.verbose && !a.help && a.version);
-
-        let i: Vec<String> = vec![
-            String::from("-iv"),
-            String::from("--"),
-            String::from("-somefile"),
-        ];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(a.interactive && a.verbose && !a.help && !a.version);
-        assert!(a.file_names[0] == "-somefile");
-
-        let i: Vec<String> = vec![
-            String::from("--"),
-            String::from("-iv"),
-            String::from("-somefile"),
-        ];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(!a.interactive && !a.verbose && !a.help && !a.version);
-        assert!(a.file_names[0] == "-iv");
-        assert!(a.file_names[1] == "-somefile");
-
-        let i: Vec<String> = vec![
-            String::from("somefile"),
-            String::from("--"),
-            String::from("-somefile"),
-        ];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(!a.interactive && !a.verbose && !a.help && !a.version);
-        assert!(a.file_names[0] == "somefile");
-        assert!(a.file_names[1] == "-somefile");
-
-        let i: Vec<String> = vec![
-            String::from("-iv"),
-            String::from("somefile"),
-            String::from("--"),
-            String::from("-somefile"),
-        ];
-        let args = parse_args(i);
-        assert!(args.is_ok());
-        let a = args.unwrap();
-        assert!(a.interactive && a.verbose && !a.help && !a.version);
-        assert!(a.file_names[0] == "somefile");
-        assert!(a.file_names[1] == "-somefile");
-    }
-
-    #[test]
-    fn test_parse_args_err() {
-        let i: Vec<String> = vec![];
-        let args = parse_args(i);
-        assert!(args.is_err());
-
-        // need to specify a file if not help or version
-        let i: Vec<String> = vec![String::from("-v")];
-        let args = parse_args(i);
-        assert!(args.is_err());
-
-        let i: Vec<String> = vec![String::from("-G")];
-        let args = parse_args(i);
-        assert!(args.is_err());
-
-        // can't use help or version with other flags
-        let i: Vec<String> = vec![String::from("-ivh")];
-        let args = parse_args(i);
-        assert!(args.is_err());
-        let i: Vec<String> = vec![String::from("-ivV")];
-        let args = parse_args(i);
-        assert!(args.is_err());
-
-        let i: Vec<String> = vec![String::from("--")];
-        let args = parse_args(i);
-        assert!(args.is_err());
     }
 }
