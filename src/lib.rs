@@ -6,7 +6,7 @@ use std::ffi::CString;
 use std::fs::{create_dir, read_dir, read_to_string, rename, File, OpenOptions};
 use std::io::Write;
 use std::os::linux::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use urlencoding::{decode, encode};
@@ -15,7 +15,6 @@ use libc;
 
 // Does NOT support trashing files from external mounts to user's trash dir
 // Does NOT trash a file from external mounts to home if topdirs cannot be used
-
 
 #[derive(Eq, PartialEq)]
 pub enum TrashRootType {
@@ -116,7 +115,10 @@ impl TrashDirectory {
         Ok(trash_dir)
     }
 
-    pub fn generate_trash_entry_names(&self, trash_file: &mut TrashFile) -> Result<(), Box<dyn Error>> {
+    pub fn generate_trash_entry_names(
+        &self,
+        trash_file: &mut TrashFile,
+    ) -> Result<(), Box<dyn Error>> {
         let stripped_file_name = trash_file
             .original_file
             .file_name()
@@ -681,7 +683,7 @@ impl DeviceNumber {
     // a 32-bit quantity with 12 bits set aside for the major number and 20 for the minor
     // number. Your code should, of course, never make any assumptions about the inter-
     // nal organization of device numbers;
-   pub  fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
+    pub fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
         let f_metadata = abs_file_path.metadata()?;
         let file_device_id = f_metadata.st_dev();
 
@@ -703,6 +705,17 @@ impl DeviceNumber {
     }
 }
 
+pub fn to_abs_path(path: impl AsRef<Path>) -> Result<PathBuf, Box<dyn Error>> {
+    let path = path.as_ref();
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()?.join(path)
+    };
+
+    Ok(abs_path)
+}
+
 pub fn msg_err<T>(msg: T) -> ()
 where
     T: std::fmt::Display,
@@ -721,8 +734,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::fs::remove_dir_all;
     use std::fs::create_dir_all;
+    use std::fs::remove_dir_all;
     use std::process::Command;
 
     use super::*;
@@ -741,13 +754,21 @@ mod tests {
         let _ = create_dir_all(test_dir_2);
 
         let test_file = test_dir_1.join("test_file");
-        let test_file_size = 10*1024*1024; // 10MB
+        let test_file_size = 10 * 1024 * 1024; // 10MB
         let mut f = File::create(test_file).expect("couldn't create test file");
         let dummy_buffer = vec![0u8; test_file_size];
         let _ = f.write_all(&dummy_buffer);
 
-        let op = Command::new("sh").arg("-c").arg(format!("du -B1 -d 0 {} | cut -f1", temp_test_dir.display())).output().expect("du failed");
-        let du_size = String::from_utf8(op.stdout).unwrap().trim().parse::<u64>().unwrap();
+        let op = Command::new("sh")
+            .arg("-c")
+            .arg(format!("du -B1 -d 0 {} | cut -f1", temp_test_dir.display()))
+            .output()
+            .expect("du failed");
+        let du_size = String::from_utf8(op.stdout)
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap();
         let dir_size = get_dir_size(&temp_test_dir).unwrap();
         assert!(du_size == dir_size);
 

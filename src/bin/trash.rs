@@ -37,7 +37,7 @@ fn main() {
 
     for file_name in args_conf.file_names {
         // get absolute path and check file exists
-        let abs_file = match std::fs::canonicalize(&file_name) {
+        let abs_file = match to_abs_path(&file_name) {
             Ok(v) => v,
             Err(_) => {
                 msg_err(format!(
