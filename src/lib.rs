@@ -276,6 +276,43 @@ impl TrashDirectory {
         Ok(())
     }
 
+    // pub fn get_trashed_files(&self) -> Result<Vec<TrashFile>, Box<dyn Error>> {
+    //     let files_dir = self.files;
+    //     let trashinfo_dir = self.info;
+
+    //     let mut files: Vec<TrashFile> = vec![];
+
+    //     for child in read_dir(files_dir)? {
+    //         let child = child?;
+    //         let child_path = child.path();
+    //         // println!("file {}", child_path.display());
+    //         let trash_info_entry = trashinfo_dir.join(format!(
+    //             "{}.trashinfo",
+    //             child_path.file_name().unwrap().to_str().unwrap()
+    //         ));
+    //         // println!("checking {}", trash_info_entry.display());
+    //         if !trash_info_entry.is_file() {
+    //             // println!("{} is not a file", trash_info_entry.display());
+    //             continue;
+    //         }
+
+    //         // println!("reading");
+    //         let trashinfo_content =
+    //             read_to_string(trash_info_entry).expect("couldn't read trashinfo entry");
+    //         // println!("read:{}", trashinfo_content);
+    //         let (original_path, deletion_date) = parse_trashinfo(&trashinfo_content)?;
+    //         let original_file = PathBuf::from(&original_path);
+    //         let trashed_entry = TrashedFile {
+    //             OriginalFile: original_file,
+    //             DeletionDate: deletion_date,
+    //             File: child_path,
+    //         };
+    //         files.push(trashed_entry);
+    //     }
+
+    //     Ok(files)
+    // }
+
     pub fn get_trashable_file_name(stripped_file_name: String, idx: u32) -> String {
         // nautilus trash files when duplicated start from suffix 2
         if idx < 2 {
@@ -400,6 +437,10 @@ impl TrashFile {
         })
     }
 
+    pub fn from(trash_file: PathBuf) -> Result<TrashFile, Box<dyn Error>> {
+        todo!()
+    }
+
     pub fn create_trashinfo(&self, trash_dir: &TrashDirectory) -> Result<&PathBuf, Box<dyn Error>> {
         if self.files_entry == None || self.trashinfo_entry == None {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
@@ -466,6 +507,10 @@ DeletionDate={}
         let files_entry = self.files_entry.as_ref().unwrap();
         rename(&self.original_file, files_entry)?;
         Ok(files_entry)
+    }
+
+    pub fn restore(&self) -> Result<&PathBuf, Box<dyn Error>> {
+        todo!()
     }
 }
 
