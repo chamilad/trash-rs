@@ -1,7 +1,7 @@
-use std::env;
+// use std::env;
 use std::error::Error;
-use std::fs::{read_dir, read_to_string};
-use std::path::PathBuf;
+use std::fs::read_dir;
+// use std::path::PathBuf;
 
 use crossterm::event::{self, Event, KeyCode};
 use libtrash::*;
@@ -16,9 +16,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use std::fs::{self, rename, File};
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
-use urlencoding::decode;
+// use urlencoding::decode;
 
 const VERBOSE_MODE: bool = false;
 
@@ -42,16 +42,16 @@ enum AppState {
     RefreshFileList,
 }
 
-#[derive(Debug, Clone)]
-struct TrashedFile {
-    OriginalFile: PathBuf,
-    DeletionDate: String,
-    TrashFile: PathBuf,
-}
+// #[derive(Debug, Clone)]
+// struct TrashedFile {
+//     OriginalFile: PathBuf,
+//     DeletionDate: String,
+//     TrashFile: PathBuf,
+// }
 
 struct App {
     state: AppState,
-    trashed_files: Vec<TrashedFile>,
+    trashed_files: Vec<TrashFile>,
     selected: usize,
 }
 
@@ -115,23 +115,23 @@ impl App {
                     .enumerate()
                     .map(|(i, file)| {
                         let original_file_name = file
-                            .OriginalFile
+                            .original_file
                             .file_name()
                             .expect("file_name")
                             .to_os_string()
                             .into_string()
                             .unwrap();
 
-                        let original_path = file.OriginalFile.to_str().unwrap();
+                        let original_path = file.original_file.to_str().unwrap();
 
                         // Calculate padding to fill the remaining space for full line width
                         let padding =
                             (file_list_width as usize).saturating_sub(original_file_name.len());
                         let padded_str = format!("{}{}", original_file_name, " ".repeat(padding));
 
-                        let f_type: String = if file.TrashFile.is_dir() {
+                        let f_type: String = if file.files_entry.as_ref().unwrap().is_dir() {
                             "Directory".to_string()
-                        } else if file.TrashFile.is_symlink() {
+                        } else if file.files_entry.as_ref().unwrap().is_symlink() {
                             "Link".to_string()
                         } else {
                             "File".to_string()
@@ -170,17 +170,17 @@ impl App {
                                         Style::default().add_modifier(Modifier::BOLD),
                                     ),
                                     Span::styled(
-                                        file.DeletionDate.clone(),
+                                        file.trashinfo.as_ref().unwrap().deletion_date.clone(),
                                         Style::default().fg(Color::Gray),
                                     ),
                                 ]),
                             ]);
 
                             // generate file preview
-                            preview = if file.TrashFile.is_dir() {
+                            preview = if file.files_entry.as_ref().unwrap().is_dir() {
                                 // show contents up to 10
                                 let mut lines = vec![];
-                                let entries = read_dir(file.TrashFile.clone())
+                                let entries = read_dir(file.files_entry.as_ref().unwrap().clone())
                                     .unwrap()
                                     .map(|res| res.map(|e| e.path()))
                                     .collect::<Result<Vec<_>, io::Error>>()
@@ -232,8 +232,8 @@ impl App {
                                     }
                                 }
                                 Text::from(lines)
-                            } else if file.TrashFile.is_symlink() {
-                                match fs::read_link(file.TrashFile.clone()) {
+                            } else if file.files_entry.as_ref().unwrap().is_symlink() {
+                                match fs::read_link(file.files_entry.as_ref().unwrap().clone()) {
                                     Ok(target_path) => {
                                         let target_path_str =
                                             target_path.to_string_lossy().to_string();
@@ -253,9 +253,10 @@ impl App {
                                         Style::default().fg(Color::Gray),
                                     ),
                                 }
-                            } else if file.TrashFile.is_file() {
+                            } else if file.files_entry.as_ref().unwrap().is_file() {
                                 // check if file is a text readable
-                                let mut prev_file = File::open(file.TrashFile.clone()).unwrap();
+                                let mut prev_file =
+                                    File::open(file.files_entry.as_ref().unwrap().clone()).unwrap();
                                 let mut prev_buffer = [0; 1024];
                                 let bytes_read = prev_file.read(&mut prev_buffer[..]).unwrap();
 
@@ -266,7 +267,9 @@ impl App {
                                     let prev_content = if prev_reader.lines().count() == 0 {
                                         "empty file".to_string()
                                     } else {
-                                        let prev_file = File::open(file.TrashFile.clone()).unwrap();
+                                        let prev_file =
+                                            File::open(file.files_entry.as_ref().unwrap().clone())
+                                                .unwrap();
                                         let prev_reader = BufReader::new(prev_file);
                                         let mut content_buff = "".to_string();
                                         for line in
@@ -288,9 +291,9 @@ impl App {
                                 Text::styled("unknown file type", Style::default().fg(Color::Gray))
                             };
 
-                            let fg_color: Color = if file.TrashFile.is_dir() {
+                            let fg_color: Color = if file.files_entry.as_ref().unwrap().is_dir() {
                                 SELECTED_FG_COLOR_DIR
-                            } else if file.TrashFile.is_symlink() {
+                            } else if file.files_entry.as_ref().unwrap().is_symlink() {
                                 SELECTED_FG_COLOR_LINK
                             } else {
                                 SELECTED_FG_COLOR_FILE
@@ -304,9 +307,9 @@ impl App {
                                     .add_modifier(Modifier::BOLD),
                             )
                         } else {
-                            let fg_color: Color = if file.TrashFile.is_dir() {
+                            let fg_color: Color = if file.files_entry.as_ref().unwrap().is_dir() {
                                 UNSELECTED_FG_COLOR_DIR
-                            } else if file.TrashFile.is_symlink() {
+                            } else if file.files_entry.as_ref().unwrap().is_symlink() {
                                 UNSELECTED_FG_COLOR_LINK
                             } else {
                                 UNSELECTED_FG_COLOR_FILE
@@ -350,7 +353,10 @@ impl App {
                 f.render_widget(preview_text, desc_chunks[1]);
             }
             AppState::DeletionConfirmation(choice) => {
+                // space between buttons
                 let spacer = Span::styled("      ", Style::default());
+
+                // illusion of buttons
                 let buttons = if choice == 0 {
                     Line::from(vec![
                         Span::styled(
@@ -361,14 +367,14 @@ impl App {
                                 .fg(Color::White),
                         ),
                         spacer,
-                        Span::styled("[Cancel (Esc)]", Style::default()),
+                        Span::styled("[Cancel]", Style::default()),
                     ])
                 } else {
                     Line::from(vec![
                         Span::styled("[Confirm]", Style::default()),
                         spacer,
                         Span::styled(
-                            "[Cancel (Esc)]",
+                            "[Cancel]",
                             Style::default()
                                 .add_modifier(Modifier::BOLD)
                                 .bg(Color::Black)
@@ -377,25 +383,15 @@ impl App {
                     ])
                 };
 
+                // question in some mixed style
                 let selected_file = &self.trashed_files[self.selected];
-                // let text = format!(
-                //     "Are you sure you want to restore '{}' to '{}'",
-                //     selected_file
-                //         .OriginalFile
-                //         .file_name()
-                //         .unwrap()
-                //         .to_str()
-                //         .unwrap(),
-                //     selected_file.OriginalFile.display().to_string(),
-                // );
-                // let question = Span::styled(text, Style::default());
                 let question = Line::from(vec![
                     Span::styled("This will restore file ", Style::default()),
                     Span::styled(
                         format!(
                             "'{}' ",
                             selected_file
-                                .OriginalFile
+                                .original_file
                                 .file_name()
                                 .unwrap()
                                 .to_str()
@@ -405,12 +401,13 @@ impl App {
                     ),
                     Span::styled("to ", Style::default()),
                     Span::styled(
-                        format!("'{}' ", selected_file.OriginalFile.display().to_string(),),
+                        format!("'{}' ", selected_file.original_file.display().to_string(),),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::styled("?", Style::default()),
                 ]);
 
+                // popup dialog
                 let area = f.area();
                 let block = Block::bordered()
                     .title("Confirm Action")
@@ -481,8 +478,8 @@ impl App {
                         if choice == 0 {
                             // Execute action on the selected file
                             let selected_file = &self.trashed_files[self.selected];
-                            // selected_file.restore();
-                            restore(selected_file);
+                            selected_file.restore();
+                            // restore(selected_file);
                             // println!("Performing action on: {:?}", selected_file.);
                         }
                         // }
@@ -491,7 +488,7 @@ impl App {
                     }
                     KeyCode::Esc | KeyCode::Char('q') => {
                         // Close the dialog without performing any action
-                        self.state = AppState::MainScreen;
+                        self.state = AppState::RefreshFileList;
                     }
                     _ => {}
                 }
@@ -511,7 +508,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // let files: Vec<TrashedFile> = get_trashed_files()?;
     let mut app = App::new();
 
     loop {
@@ -535,10 +531,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 continue;
             }
 
-            // if key.code == KeyCode::Char('q') {
-            //     break;
-            // }
-
             app.handle_input(key.code)
         }
     }
@@ -555,7 +547,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn get_trashed_files() -> Result<Vec<TrashedFile>, Box<dyn Error>> {
+fn get_trashed_files() -> Result<Vec<TrashFile>, Box<dyn Error>> {
     // get user trash directory
     let user_home = get_home_dir().expect("couldn't get user home directory");
     let user_trash_dir = TrashDirectory::resolve_for_file(&user_home, VERBOSE_MODE)
@@ -568,64 +560,66 @@ fn get_trashed_files() -> Result<Vec<TrashedFile>, Box<dyn Error>> {
     //
     // todo: do the same for every mounted drive
 
-    let files_dir = user_trash_dir.files;
-    let trashinfo_dir = user_trash_dir.info;
+    // let files_dir = user_trash_dir.files;
+    // let trashinfo_dir = user_trash_dir.info;
 
-    let mut files: Vec<TrashedFile> = vec![];
+    let mut files: Vec<TrashFile> = vec![];
+    let mut home_trash_files = user_trash_dir.get_trashed_files()?;
+    files.append(&mut home_trash_files);
 
-    for child in read_dir(files_dir)? {
-        let child = child?;
-        let child_path = child.path();
-        // println!("file {}", child_path.display());
-        let trash_info_entry = trashinfo_dir.join(format!(
-            "{}.trashinfo",
-            child_path.file_name().unwrap().to_str().unwrap()
-        ));
-        // println!("checking {}", trash_info_entry.display());
-        if !trash_info_entry.is_file() {
-            // println!("{} is not a file", trash_info_entry.display());
-            continue;
-        }
+    // for child in read_dir(files_dir)? {
+    //     let child = child?;
+    //     let child_path = child.path();
+    //     // println!("file {}", child_path.display());
+    //     let trash_info_entry = trashinfo_dir.join(format!(
+    //         "{}.trashinfo",
+    //         child_path.file_name().unwrap().to_str().unwrap()
+    //     ));
+    //     // println!("checking {}", trash_info_entry.display());
+    //     if !trash_info_entry.is_file() {
+    //         // println!("{} is not a file", trash_info_entry.display());
+    //         continue;
+    //     }
 
-        // println!("reading");
-        let trashinfo_content =
-            read_to_string(trash_info_entry).expect("couldn't read trashinfo entry");
-        // println!("read:{}", trashinfo_content);
-        let (original_path, deletion_date) = parse_trashinfo(&trashinfo_content)?;
-        let original_file = PathBuf::from(&original_path);
-        let trashed_entry = TrashedFile {
-            OriginalFile: original_file,
-            DeletionDate: deletion_date,
-            TrashFile: child_path,
-        };
-        files.push(trashed_entry);
-    }
+    //     // println!("reading");
+    //     let trashinfo_content =
+    //         read_to_string(trash_info_entry).expect("couldn't read trashinfo entry");
+    //     // println!("read:{}", trashinfo_content);
+    //     let (original_path, deletion_date) = parse_trashinfo(&trashinfo_content)?;
+    //     let original_file = PathBuf::from(&original_path);
+    //     let trashed_entry = TrashedFile {
+    //         OriginalFile: original_file,
+    //         DeletionDate: deletion_date,
+    //         TrashFile: child_path,
+    //     };
+    //     files.push(trashed_entry);
+    // }
 
     Ok(files)
 }
 
-fn parse_trashinfo(content: &str) -> Result<(String, String), Box<dyn Error>> {
-    let lines: Vec<&str> = content.split("\n").collect();
-    // println!("lines: {:?}", lines);
-    if lines[0].trim() != "[Trash Info]"
-        || !lines[1].starts_with("Path=")
-        || !lines[2].starts_with("DeletionDate=")
-    {
-        return Err(Box::<dyn Error>::from("not a valid trashinfo entry"));
-    }
+// fn parse_trashinfo(content: &str) -> Result<(String, String), Box<dyn Error>> {
+//     let lines: Vec<&str> = content.split("\n").collect();
+//     // println!("lines: {:?}", lines);
+//     if lines[0].trim() != "[Trash Info]"
+//         || !lines[1].starts_with("Path=")
+//         || !lines[2].starts_with("DeletionDate=")
+//     {
+//         return Err(Box::<dyn Error>::from("not a valid trashinfo entry"));
+//     }
 
-    let original_path = &lines[1]["Path=".len()..];
-    let original_path = decode(original_path).expect("utf-8").into_owned();
-    let deletion_date = &lines[2]["DeletionDate=".len()..];
-    // println!("{original_path}, {deletion_date}");
+//     let original_path = &lines[1]["Path=".len()..];
+//     let original_path = decode(original_path).expect("utf-8").into_owned();
+//     let deletion_date = &lines[2]["DeletionDate=".len()..];
+//     // println!("{original_path}, {deletion_date}");
 
-    Ok((original_path, deletion_date.to_string()))
-}
+//     Ok((original_path, deletion_date.to_string()))
+// }
 
-fn restore(trashed_file: &TrashedFile) -> Result<(), Box<dyn Error>> {
-    rename(&trashed_file.TrashFile, &trashed_file.OriginalFile)?;
-    Ok(())
-}
+// fn restore(trashed_file: &TrashedFile) -> Result<(), Box<dyn Error>> {
+//     rename(&trashed_file.TrashFile, &trashed_file.OriginalFile)?;
+//     Ok(())
+// }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
 fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {

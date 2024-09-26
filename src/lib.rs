@@ -1,4 +1,4 @@
-use chrono::Local;
+use chrono::{DateTime, Local};
 use rand::Rng;
 use std::env;
 use std::error::Error;
@@ -139,9 +139,29 @@ impl TrashDirectory {
                 "{}.trashinfo",
                 file.file_name().unwrap().to_str().unwrap()
             ));
+
+            // we've found a fresh number!!
             if !file.exists() && !trashinfo.exists() {
                 trash_file.files_entry = Some(file);
-                trash_file.trashinfo_entry = Some(trashinfo);
+
+                // derive trashinfo entries
+                let relative_path: PathBuf;
+                // The system SHOULD support absolute pathnames only in the
+                // “home trash” directory, not in the directories under $topdir
+                let file_path_key = match self.root_type {
+                    TrashRootType::Home => trash_file.original_file.to_str().unwrap(),
+                    _ => {
+                        let trash_home_mt_point = self.device.mount_point.as_ref().unwrap();
+                        relative_path =
+                            get_path_relative_to(&trash_file.original_file, &trash_home_mt_point)?;
+                        relative_path.to_str().unwrap()
+                    }
+                };
+
+                let now = Local::now();
+                let trashinfo_entry = TrashInfo::new(trashinfo, file_path_key, now);
+                trash_file.trashinfo = Some(trashinfo_entry);
+
                 return Ok(());
             }
         }
@@ -182,9 +202,10 @@ impl TrashDirectory {
 
         let size = get_dir_size(&trashed_file)?;
         let mtime = match trash_file
-            .trashinfo_entry
+            .trashinfo
             .clone()
             .unwrap()
+            .path
             .metadata()
             .unwrap()
             .modified()
@@ -276,42 +297,50 @@ impl TrashDirectory {
         Ok(())
     }
 
-    // pub fn get_trashed_files(&self) -> Result<Vec<TrashFile>, Box<dyn Error>> {
-    //     let files_dir = self.files;
-    //     let trashinfo_dir = self.info;
+    pub fn get_trashed_files(&self) -> Result<Vec<TrashFile>, Box<dyn Error>> {
+        let files_dir = self.files.clone();
+        // let trashinfo_dir = self.info.clone();
 
-    //     let mut files: Vec<TrashFile> = vec![];
+        let mut files: Vec<TrashFile> = vec![];
 
-    //     for child in read_dir(files_dir)? {
-    //         let child = child?;
-    //         let child_path = child.path();
-    //         // println!("file {}", child_path.display());
-    //         let trash_info_entry = trashinfo_dir.join(format!(
-    //             "{}.trashinfo",
-    //             child_path.file_name().unwrap().to_str().unwrap()
-    //         ));
-    //         // println!("checking {}", trash_info_entry.display());
-    //         if !trash_info_entry.is_file() {
-    //             // println!("{} is not a file", trash_info_entry.display());
-    //             continue;
-    //         }
+        for child in read_dir(files_dir)? {
+            let child = child?;
+            let child_path = child.path();
+            // println!("file {}", child_path.display());
+            // let trashinfo_path = trashinfo_dir.join(format!(
+            //     "{}.trashinfo",
+            //     child_path.file_name().unwrap().to_str().unwrap()
+            // ));
+            // // println!("checking {}", trash_info_entry.display());
+            // if !trashinfo_path.is_file() {
+            //     // println!("{} is not a file", trash_info_entry.display());
+            //     continue;
+            // }
 
-    //         // println!("reading");
-    //         let trashinfo_content =
-    //             read_to_string(trash_info_entry).expect("couldn't read trashinfo entry");
-    //         // println!("read:{}", trashinfo_content);
-    //         let (original_path, deletion_date) = parse_trashinfo(&trashinfo_content)?;
-    //         let original_file = PathBuf::from(&original_path);
-    //         let trashed_entry = TrashedFile {
-    //             OriginalFile: original_file,
-    //             DeletionDate: deletion_date,
-    //             File: child_path,
-    //         };
-    //         files.push(trashed_entry);
-    //     }
+            // // println!("reading");
+            // // let trashinfo_content =
+            // // read_to_string(trash_info_entry).expect("couldn't read trashinfo entry");
+            // // println!("read:{}", trashinfo_content);
+            // // let (original_path, deletion_date) = parse_trashinfo(&trashinfo_content)?;
+            // // let original_file = PathBuf::from(&original_path);
+            // // let trashed_entry = TrashedFile {
+            // //     OriginalFile: original_file,
+            // //     DeletionDate: deletion_date,
+            // //     File: child_path,
+            // // };
+            // let trashinfo = TrashInfo::from(&trashinfo_path)?;
+            // let original_file = trashinfo.get_original_path();
+            // let trash_entry = TrashFile {
+            //     original_file,
+            //     files_entry: Some(child_path),
+            //     trashinfo: Some(trashinfo),
+            // };
+            let trash_entry = TrashFile::from(child_path, &self)?;
+            files.push(trash_entry);
+        }
 
-    //     Ok(files)
-    // }
+        Ok(files)
+    }
 
     pub fn get_trashable_file_name(stripped_file_name: String, idx: u32) -> String {
         // nautilus trash files when duplicated start from suffix 2
@@ -417,67 +446,76 @@ impl TrashDirectory {
     }
 }
 
-pub struct TrashFile {
-    original_file: PathBuf,
-    // file_type: FileType,
-    files_entry: Option<PathBuf>,
-    trashinfo_entry: Option<PathBuf>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrashInfo {
+    pub original_path: String, // encoded path entry
+    pub deletion_date: String, // formatted date
+    pub path: PathBuf,
 }
 
-impl TrashFile {
-    pub fn new(original_file: PathBuf) -> Result<TrashFile, Box<dyn Error>> {
-        if !original_file.is_absolute() {
-            return Err(Box::<dyn Error>::from("file path is not absolute"));
+impl TrashInfo {
+    pub fn new(trashinfo: PathBuf, original_path: &str, deletion_date: DateTime<Local>) -> Self {
+        // SHOULD store the file name as the sequence of bytes
+        // produced by the file system, with characters escaped as in
+        // URLs (as defined by RFC 2396, section 2)
+        let file_path_encoded = &encode(original_path);
+
+        // are to be in the YYYY-MM-DDThh:mm:ss format (see RFC 3339).
+        // The time zone should be the user's (or filesystem's) local time
+        let deletion_date_fmt =
+            deletion_date.to_rfc3339_opts(chrono::format::SecondsFormat::Secs, true);
+
+        TrashInfo {
+            original_path: file_path_encoded.to_string(),
+            deletion_date: deletion_date_fmt,
+            path: trashinfo,
+        }
+    }
+
+    pub fn from(path: &PathBuf) -> Result<Self, Box<dyn Error>> {
+        let trashinfo_content = read_to_string(path).expect("couldn't read trashinfo entry");
+        let lines: Vec<&str> = trashinfo_content.split("\n").collect();
+        // println!("lines: {:?}", lines);
+        if lines[0].trim() != "[Trash Info]"
+            || !lines[1].starts_with("Path=")
+            || !lines[2].starts_with("DeletionDate=")
+        {
+            return Err(Box::<dyn Error>::from("not a valid trashinfo entry"));
         }
 
-        Ok(TrashFile {
-            original_file,
-            files_entry: None,
-            trashinfo_entry: None,
+        let original_path = &lines[1]["Path=".len()..];
+        let deletion_date = &lines[2]["DeletionDate=".len()..];
+        // println!("{original_path}, {deletion_date}");
+
+        Ok(TrashInfo {
+            original_path: original_path.to_string(),
+            deletion_date: deletion_date.to_string(),
+            path: path.to_path_buf(),
         })
     }
 
-    pub fn from(trash_file: PathBuf) -> Result<TrashFile, Box<dyn Error>> {
-        todo!()
+    pub fn get_original_path(&self) -> PathBuf {
+        PathBuf::from(decode(&self.original_path).expect("utf-8").into_owned())
     }
 
-    pub fn create_trashinfo(&self, trash_dir: &TrashDirectory) -> Result<&PathBuf, Box<dyn Error>> {
-        if self.files_entry == None || self.trashinfo_entry == None {
-            return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
-        }
-
-        let relative_path: PathBuf;
-        // The system SHOULD support absolute pathnames only in the “home trash” directory, not in the directories under $topdir
-        let file_path_key = match trash_dir.root_type {
-            TrashRootType::Home => self.original_file.to_str().unwrap(),
-            _ => {
-                let trash_home_mt_point = trash_dir.device.mount_point.as_ref().unwrap();
-                relative_path = get_path_relative_to(&self.original_file, &trash_home_mt_point)?;
-                relative_path.to_str().unwrap()
-            }
-        };
-
-        let file_path_encoded = &encode(file_path_key);
-
-        let info_entry = self.trashinfo_entry.as_ref().unwrap();
-        if info_entry.exists() {
+    pub fn create_file(&self) -> Result<&PathBuf, Box<dyn Error>> {
+        // let info_entry = self.trashinfo_entry.as_ref().unwrap();
+        if self.path.exists() {
             return Err(Box::<dyn Error>::from("info entry already exists"));
         }
 
-        let now = Local::now();
-        let deletion_date = now.to_rfc3339_opts(chrono::format::SecondsFormat::Secs, true);
         let trashinfo = format!(
             r#"[Trash Info]
 Path={}
 DeletionDate={}
 "#,
-            file_path_encoded, deletion_date
+            self.original_path, self.deletion_date
         );
 
         let mut f = match OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(info_entry)
+            .open(&self.path)
         {
             Ok(v) => v,
             Err(e) => {
@@ -496,21 +534,79 @@ DeletionDate={}
             }
         };
 
-        Ok(info_entry)
+        Ok(&self.path)
+    }
+}
+
+pub struct TrashFile {
+    pub original_file: PathBuf,
+    // file_type: FileType,
+    pub files_entry: Option<PathBuf>,
+    pub trashinfo: Option<TrashInfo>,
+}
+
+impl TrashFile {
+    // file to be trashed
+    pub fn new(original_file: PathBuf) -> Result<TrashFile, Box<dyn Error>> {
+        if !original_file.is_absolute() {
+            return Err(Box::<dyn Error>::from("file path is not absolute"));
+        }
+
+        Ok(TrashFile {
+            original_file,
+            files_entry: None,
+            trashinfo: None,
+        })
     }
 
-    pub fn trash(&self) -> Result<&PathBuf, Box<dyn Error>> {
-        if self.files_entry == None || self.trashinfo_entry == None {
+    // from existing file
+    pub fn from(
+        trash_file: PathBuf,
+        trash_dir: &TrashDirectory,
+    ) -> Result<TrashFile, Box<dyn Error>> {
+        let trashinfo_path = trash_dir.info.join(format!(
+            "{}.trashinfo",
+            trash_file.file_name().unwrap().to_str().unwrap()
+        ));
+        if !trashinfo_path.is_file() {
+            return Err(Box::<dyn Error>::from("trash file has no trashinfo entry"));
+        }
+
+        let trashinfo = TrashInfo::from(&trashinfo_path)?;
+        let original_file = trashinfo.get_original_path();
+        let trash_entry = TrashFile {
+            original_file,
+            files_entry: Some(trash_file),
+            trashinfo: Some(trashinfo),
+        };
+
+        Ok(trash_entry)
+    }
+
+    pub fn create_trashinfo(&self) -> Result<&PathBuf, Box<dyn Error>> {
+        if self.files_entry == None || self.trashinfo == None {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
 
-        let files_entry = self.files_entry.as_ref().unwrap();
-        rename(&self.original_file, files_entry)?;
-        Ok(files_entry)
+        Ok(self.trashinfo.as_ref().unwrap().create_file()?)
+    }
+
+    pub fn trash(&self) -> Result<&PathBuf, Box<dyn Error>> {
+        if self.files_entry == None || self.trashinfo == None {
+            return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
+        }
+
+        rename(&self.original_file, self.files_entry.as_ref().unwrap())?;
+        Ok(&self.files_entry.as_ref().unwrap())
     }
 
     pub fn restore(&self) -> Result<&PathBuf, Box<dyn Error>> {
-        todo!()
+        if self.files_entry == None || self.trashinfo == None {
+            return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
+        }
+
+        rename(&self.files_entry.as_ref().unwrap(), &self.original_file)?;
+        Ok(&self.original_file)
     }
 }
 

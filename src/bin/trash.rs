@@ -117,7 +117,7 @@ fn main() {
             }
         }
 
-        match trash_file.create_trashinfo(&trash_dir) {
+        match trash_file.create_trashinfo() {
             Ok(_) => (),
             Err(e) => {
                 msg_err(format!("cannot trash '{file_name}': {e}"));
