@@ -14,10 +14,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::{restore, Frame, Terminal};
-use std::cmp::Ordering::Equal;
+use std::cmp::Ordering::{Equal, Greater, Less};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
-use std::os::linux::fs::MetadataExt;
 
 const VERBOSE_MODE: bool = false;
 
@@ -370,6 +369,7 @@ impl App {
                 f.render_widget(desc_text, desc_chunks[0]);
                 f.render_widget(preview_text, desc_chunks[1]);
             }
+
             AppState::DeletionConfirmation(choice) => {
                 // question in some mixed style
                 let selected_file = &self.trashed_files[self.selected];
@@ -438,83 +438,85 @@ impl App {
                 f.render_widget(Clear, area); //this clears out the background
                 f.render_widget(dialog, area);
             }
+
             AppState::SortListDialog(choice) => {
                 let question = Line::from(vec![Span::styled(
                     "Select sort by column",
                     Style::default(),
                 )]);
 
-                let mut choices = match choice {
-                    SortType::DeletionDate => vec![
-                        Line::from(vec![
-                            Span::styled(
-                                "[x]",
-                                Style::default()
-                                    .add_modifier(Modifier::BOLD)
-                                    .bg(Color::Black)
-                                    .fg(Color::White),
-                            ),
-                            Span::styled(
-                                " Deleted on",
-                                Style::default().bg(Color::Black).fg(Color::White),
-                            ),
-                        ]),
-                        Line::from(vec![
-                            Span::styled("[ ]", Style::default()),
-                            Span::styled(" Origin    ", Style::default()),
-                        ]),
-                        Line::from(vec![
-                            Span::styled("[ ]", Style::default()),
-                            Span::styled(" Size      ", Style::default()),
-                        ]),
-                    ],
-                    SortType::TrashRoot => vec![
-                        Line::from(vec![
-                            Span::styled("[ ]", Style::default()),
-                            Span::styled(" Deleted on", Style::default()),
-                        ]),
-                        Line::from(vec![
-                            Span::styled(
-                                "[x]",
-                                Style::default()
-                                    .add_modifier(Modifier::BOLD)
-                                    .bg(Color::Black)
-                                    .fg(Color::White),
-                            ),
-                            Span::styled(
-                                " Origin    ",
-                                Style::default().bg(Color::Black).fg(Color::White),
-                            ),
-                        ]),
-                        Line::from(vec![
-                            Span::styled("[ ]", Style::default()),
-                            Span::styled(" Size      ", Style::default()),
-                        ]),
-                    ],
-                    SortType::Size => vec![
-                        Line::from(vec![
-                            Span::styled("[ ]", Style::default()),
-                            Span::styled(" Deleted on", Style::default()),
-                        ]),
-                        Line::from(vec![
-                            Span::styled("[ ]", Style::default()),
-                            Span::styled(" Origin    ", Style::default()),
-                        ]),
-                        Line::from(vec![
-                            Span::styled(
-                                "[x]",
-                                Style::default()
-                                    .add_modifier(Modifier::BOLD)
-                                    .bg(Color::Black)
-                                    .fg(Color::White),
-                            ),
-                            Span::styled(
-                                " Size      ",
-                                Style::default().bg(Color::Black).fg(Color::White),
-                            ),
-                        ]),
-                    ],
+                let mut choices: Vec<Line> = vec![];
+                // Deletion Date
+                let dd_check_mark = if self.sort_type == SortType::DeletionDate {
+                    Span::styled(
+                        "[x]",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Black)
+                            .fg(Color::White),
+                    )
+                } else {
+                    Span::styled("[ ]", Style::default())
                 };
+
+                let dd_label = if *choice == SortType::DeletionDate {
+                    Span::styled(
+                        " Deleted on",
+                        Style::default().bg(Color::Black).fg(Color::White),
+                    )
+                } else {
+                    Span::styled(" Deleted on", Style::default())
+                };
+
+                choices.push(Line::from(vec![dd_check_mark, dd_label]));
+
+                // Origin
+                let o_check_mark = if self.sort_type == SortType::TrashRoot {
+                    Span::styled(
+                        "[x]",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Black)
+                            .fg(Color::White),
+                    )
+                } else {
+                    Span::styled("[ ]", Style::default())
+                };
+
+                let o_label = if *choice == SortType::TrashRoot {
+                    Span::styled(
+                        " Origin    ",
+                        Style::default().bg(Color::Black).fg(Color::White),
+                    )
+                } else {
+                    Span::styled(" Origin    ", Style::default())
+                };
+
+                choices.push(Line::from(vec![o_check_mark, o_label]));
+
+                // Size
+                let s_check_mark = if self.sort_type == SortType::Size {
+                    Span::styled(
+                        "[x]",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Black)
+                            .fg(Color::White),
+                    )
+                } else {
+                    Span::styled("[ ]", Style::default())
+                };
+
+                let s_label = if *choice == SortType::Size {
+                    Span::styled(
+                        " Size      ",
+                        Style::default().bg(Color::Black).fg(Color::White),
+                    )
+                } else {
+                    Span::styled(" Size      ", Style::default())
+                };
+
+                choices.push(Line::from(vec![s_check_mark, s_label]));
 
                 // popup dialog
                 let mut dialog_content = vec![question, Line::from(vec![])];
@@ -551,35 +553,38 @@ impl App {
 
     fn handle_input(&mut self, key: KeyCode) {
         match self.state {
-            AppState::MainScreen => {
-                match key {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if self.selected > 0 {
-                            self.selected -= 1;
-                        }
+            AppState::MainScreen => match key {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.selected > 0 {
+                        self.selected -= 1;
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if self.selected < self.trashed_files.len() - 1 {
-                            self.selected += 1;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        self.state = AppState::DeletionConfirmation(0);
-                    }
-                    KeyCode::Char('r') => {
-                        // todo: refresh file list
-                        self.state = AppState::RefreshFileList;
-                    }
-                    KeyCode::Char('s') => {
-                        // todo: refresh file list
-                        self.state = AppState::SortListDialog(self.sort_type);
-                    }
-                    KeyCode::Char('q') => {
-                        self.state = AppState::Exiting;
-                    }
-                    _ => {}
                 }
-            }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.selected < self.trashed_files.len() - 1 {
+                        self.selected += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    self.state = AppState::DeletionConfirmation(0);
+                }
+                KeyCode::Char('r') => {
+                    self.state = AppState::RefreshFileList;
+                }
+                KeyCode::Char('s') => {
+                    self.state = AppState::SortListDialog(self.sort_type);
+                }
+                KeyCode::Char('g') => {
+                    self.selected = 0;
+                }
+                KeyCode::Char('G') => {
+                    self.selected = self.trashed_files.len() - 1;
+                }
+                KeyCode::Char('q') => {
+                    self.state = AppState::Exiting;
+                }
+                _ => {}
+            },
+
             AppState::DeletionConfirmation(choice) => {
                 match key {
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('h') => {
@@ -605,6 +610,7 @@ impl App {
                     _ => {}
                 }
             }
+
             AppState::SortListDialog(choice) => match key {
                 KeyCode::Down | KeyCode::Char('j') => {
                     let next_choice = match choice {
@@ -703,11 +709,25 @@ fn get_trashed_files(sort: &SortType) -> Result<Vec<TrashFile>, Box<dyn Error>> 
     files.append(&mut home_trash_files);
     files.sort_by(|a, b| match sort {
         SortType::DeletionDate => {
+            // sort by deletion date, if equal directories first
             let a_date = a.trashinfo.clone().unwrap().deletion_date;
             let b_date = b.trashinfo.clone().unwrap().deletion_date;
-            b_date.cmp(&a_date)
+            let cmp_date = b_date.cmp(&a_date);
+
+            // cmp_date
+            match cmp_date {
+                Equal => {
+                    if a.files_entry.as_deref().unwrap().is_dir() {
+                        Greater
+                    } else {
+                        Less
+                    }
+                }
+                other => other,
+            }
         }
         SortType::TrashRoot => {
+            // compare by origin, if equal, then by deletion date
             let a_dev = a.trashroot.device.clone().dev_num.dev_id;
             let b_dev = b.trashroot.device.clone().dev_num.dev_id;
             let cmp_dev = a_dev.cmp(&b_dev);
@@ -721,44 +741,7 @@ fn get_trashed_files(sort: &SortType) -> Result<Vec<TrashFile>, Box<dyn Error>> 
             }
         }
         SortType::Size => {
-            // todo: becaue link
-            // println!("b_files: {}", b.files_entry.as_ref().unwrap().display());
-            // let a_size = match a.files_entry.as_ref().unwrap().is_symlink() {
-            //     true => {
-            //         a.files_entry
-            //             .as_ref()
-            //             .unwrap()
-            //             .symlink_metadata()
-            //             .unwrap()
-            //             .st_size();
-            //     }
-            //     false => {
-            //         a.files_entry
-            //             .as_ref()
-            //             .unwrap()
-            //             .metadata()
-            //             .unwrap()
-            //             .st_size();
-            //     }
-            // };
-            // let b_size = match b.files_entry.as_ref().unwrap().is_symlink() {
-            //     true => {
-            //         b.files_entry
-            //             .as_ref()
-            //             .unwrap()
-            //             .symlink_metadata()
-            //             .unwrap()
-            //             .st_size();
-            //     }
-            //     false => {
-            //         b.files_entry
-            //             .as_ref()
-            //             .unwrap()
-            //             .metadata()
-            //             .unwrap()
-            //             .st_size();
-            //     }
-            // };
+            // compare by size, if equal, then by deletion date
             let a_size = a.get_size().expect("error while getting file size");
             let b_size = b.get_size().expect("error while getting file size");
             let cmp_size = b_size.cmp(&a_size);

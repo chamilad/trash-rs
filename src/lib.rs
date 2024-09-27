@@ -596,12 +596,6 @@ impl TrashFile {
                 .st_size()
         } else if self.files_entry.as_ref().unwrap().is_dir() {
             get_dir_size(self.files_entry.as_ref().unwrap())?
-            // self.files_entry
-            //     .as_ref()
-            //     .unwrap()
-            //     .metadata()
-            //     .unwrap()
-            //     .st_size()
         } else {
             self.files_entry
                 .as_ref()
