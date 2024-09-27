@@ -43,7 +43,7 @@ enum SortType {
 enum AppState {
     RefreshFileList,
     MainScreen,
-    DeletionConfirmation(usize),
+    RestoreConfirmation(usize),
     SortListDialog(SortType),
     Exiting,
 }
@@ -83,9 +83,16 @@ impl App {
             .borders(Borders::ALL)
             .style(Style::default());
 
+        let frame_area = f.area();
+        let title = "Trash Bin";
+        let padding = (frame_area.width as usize).saturating_sub(title.len());
+        let padded_title = format!("{}{}", title, " ".repeat(padding));
         let title = Paragraph::new(Text::styled(
-            "Rubbish Bin",
-            Style::default().add_modifier(Modifier::BOLD),
+            padded_title,
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .bg(Color::Green)
+                .fg(Color::Black),
         ))
         .block(title_block);
 
@@ -101,7 +108,6 @@ impl App {
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
                     .split(chunks[1]);
 
-                let frame_area = f.area();
                 let file_list_width = frame_area.width as f32 * 0.6; // 60% of the screen width
 
                 let mut selected_desc: Text = Text::default();
@@ -340,7 +346,15 @@ impl App {
                     .collect();
 
                 let list = List::new(list_items)
-                    .block(Block::default().borders(Borders::ALL).title("Trash"))
+                    .block(
+                        Block::default().borders(Borders::ALL).title(Span::styled(
+                            "Files in Trash",
+                            Style::default()
+                                .bg(Color::Green)
+                                .fg(Color::Black)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                    )
                     .highlight_style(Style::default().fg(Color::Yellow));
 
                 // ============= description
@@ -351,7 +365,13 @@ impl App {
 
                 // -------------------- description
                 let desc_block = Block::default()
-                    .title("Description")
+                    .title(Span::styled(
+                        "Description",
+                        Style::default()
+                            .bg(Color::Green)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
                     .style(Style::default());
                 let desc_text = Paragraph::new(selected_desc)
@@ -360,7 +380,13 @@ impl App {
 
                 // -------------------- preview
                 let preview_block = Block::default()
-                    .title("Preview")
+                    .title(Span::styled(
+                        "Preview",
+                        Style::default()
+                            .bg(Color::Green)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
                     .style(Style::default());
                 let preview_text = Paragraph::new(preview)
@@ -368,63 +394,84 @@ impl App {
                     .block(preview_block);
 
                 // -------------------- shortcuts
+                let sort_value = match self.sort_type {
+                    SortType::DeletionDate => "[Deleted On]",
+                    SortType::TrashRoot => "[Origin]",
+                    SortType::Size => "[Size]",
+                };
                 directions = Line::from(vec![
                     Span::styled(
                         "up/k",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - Nav up, ", Style::default()),
+                    Span::styled(" Nav up, ", Style::default()),
                     Span::styled(
                         "down/j",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - Nav down, ", Style::default()),
+                    Span::styled(" Nav down, ", Style::default()),
                     Span::styled(
                         "enter",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - Restore, ", Style::default()),
+                    Span::styled(" Restore, ", Style::default()),
                     Span::styled(
                         "q",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - Quit, ", Style::default()),
+                    Span::styled(" Quit, ", Style::default()),
                     Span::styled(
                         "s",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - Sort By, ", Style::default()),
+                    Span::styled(" Sort By", Style::default()),
+                    Span::styled(
+                        sort_value,
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Yellow)
+                            .fg(Color::Black),
+                    ),
+                    Span::styled(", ", Style::default()),
                     Span::styled(
                         "r/F5",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - Refersh, ", Style::default()),
+                    Span::styled(" Refersh, ", Style::default()),
                     Span::styled(
                         "g/PageUp",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - Go to top, ", Style::default()),
+                    Span::styled(" Go to top, ", Style::default()),
                     Span::styled(
                         "G/PageDown",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - Go to bottom, ", Style::default()),
+                    Span::styled(" Go to bottom", Style::default()),
                 ]);
 
                 f.render_widget(list, midsection_chunks[0]);
@@ -432,7 +479,7 @@ impl App {
                 f.render_widget(preview_text, desc_chunks[1]);
             }
 
-            AppState::DeletionConfirmation(choice) => {
+            AppState::RestoreConfirmation(choice) => {
                 // question in some mixed style
                 let selected_file = &self.trashed_files[self.selected];
                 let question = Line::from(vec![
@@ -505,23 +552,26 @@ impl App {
                         "left/right h/l",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - select, ", Style::default()),
+                    Span::styled(" select, ", Style::default()),
                     Span::styled(
                         "enter",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - confirm selection, ", Style::default()),
+                    Span::styled(" confirm selection, ", Style::default()),
                     Span::styled(
                         "q/esc",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - cancel, ", Style::default()),
+                    Span::styled(" cancel, ", Style::default()),
                 ]);
             }
 
@@ -625,23 +675,26 @@ impl App {
                         "up/down k/j",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - select, ", Style::default()),
+                    Span::styled(" select, ", Style::default()),
                     Span::styled(
                         "enter",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - confirm selection, ", Style::default()),
+                    Span::styled(" confirm selection, ", Style::default()),
                     Span::styled(
                         "q/esc",
                         Style::default()
                             .add_modifier(Modifier::BOLD)
-                            .fg(Color::Green),
+                            .bg(Color::Green)
+                            .fg(Color::Black),
                     ),
-                    Span::styled(" - cancel, ", Style::default()),
+                    Span::styled(" cancel, ", Style::default()),
                 ]);
             }
             _ => {}
@@ -671,7 +724,7 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    self.state = AppState::DeletionConfirmation(0);
+                    self.state = AppState::RestoreConfirmation(0);
                 }
                 KeyCode::Char('r') | KeyCode::F(5) => {
                     self.state = AppState::RefreshFileList;
@@ -691,11 +744,11 @@ impl App {
                 _ => {}
             },
 
-            AppState::DeletionConfirmation(choice) => {
+            AppState::RestoreConfirmation(choice) => {
                 match key {
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('h') => {
                         // Toggle between Yes (0) and No (1)
-                        if let AppState::DeletionConfirmation(choice) = &mut self.state {
+                        if let AppState::RestoreConfirmation(choice) = &mut self.state {
                             *choice = if *choice == 0 { 1 } else { 0 };
                         }
                     }
