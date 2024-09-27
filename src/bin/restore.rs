@@ -91,6 +91,8 @@ impl App {
 
         f.render_widget(title, chunks[0]);
 
+        let mut directions: Line = Line::default();
+
         // ================== mid section
         match &self.state {
             AppState::MainScreen => {
@@ -365,6 +367,66 @@ impl App {
                     .wrap(Wrap { trim: false })
                     .block(preview_block);
 
+                // -------------------- shortcuts
+                directions = Line::from(vec![
+                    Span::styled(
+                        "up/k",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - Nav up, ", Style::default()),
+                    Span::styled(
+                        "down/j",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - Nav down, ", Style::default()),
+                    Span::styled(
+                        "enter",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - Restore, ", Style::default()),
+                    Span::styled(
+                        "q",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - Quit, ", Style::default()),
+                    Span::styled(
+                        "s",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - Sort By, ", Style::default()),
+                    Span::styled(
+                        "r/F5",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - Refersh, ", Style::default()),
+                    Span::styled(
+                        "g/PageUp",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - Go to top, ", Style::default()),
+                    Span::styled(
+                        "G/PageDown",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - Go to bottom, ", Style::default()),
+                ]);
+
                 f.render_widget(list, midsection_chunks[0]);
                 f.render_widget(desc_text, desc_chunks[0]);
                 f.render_widget(preview_text, desc_chunks[1]);
@@ -430,13 +492,37 @@ impl App {
                 let block = Block::bordered()
                     .title("Confirm Action")
                     .style(Style::default().bg(Color::Gray).fg(Color::Black));
-                let area = popup_area(area, 40, 10);
+                let area = popup_area(area, 40, 15);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
                     .wrap(Wrap { trim: false })
                     .alignment(Alignment::Center)
                     .block(block);
                 f.render_widget(Clear, area); //this clears out the background
                 f.render_widget(dialog, area);
+
+                directions = Line::from(vec![
+                    Span::styled(
+                        "left/right h/l",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - select, ", Style::default()),
+                    Span::styled(
+                        "enter",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - confirm selection, ", Style::default()),
+                    Span::styled(
+                        "q/esc",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - cancel, ", Style::default()),
+                ]);
             }
 
             AppState::SortListDialog(choice) => {
@@ -533,6 +619,30 @@ impl App {
                     .block(block);
                 f.render_widget(Clear, area); //this clears out the background
                 f.render_widget(dialog, area);
+
+                directions = Line::from(vec![
+                    Span::styled(
+                        "up/down k/j",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - select, ", Style::default()),
+                    Span::styled(
+                        "enter",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - confirm selection, ", Style::default()),
+                    Span::styled(
+                        "q/esc",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .fg(Color::Green),
+                    ),
+                    Span::styled(" - cancel, ", Style::default()),
+                ]);
             }
             _ => {}
         }
@@ -542,13 +652,9 @@ impl App {
             .borders(Borders::ALL)
             .style(Style::default());
 
-        let directions = Paragraph::new(Text::styled(
-            "up/k - nav up, down/j - nav down, q - exit",
-            Style::default(),
-        ))
-        .block(footer_block);
+        let directions_block = Paragraph::new(directions).block(footer_block);
 
-        f.render_widget(directions, chunks[2]);
+        f.render_widget(directions_block, chunks[2]);
     }
 
     fn handle_input(&mut self, key: KeyCode) {
@@ -567,16 +673,16 @@ impl App {
                 KeyCode::Enter => {
                     self.state = AppState::DeletionConfirmation(0);
                 }
-                KeyCode::Char('r') => {
+                KeyCode::Char('r') | KeyCode::F(5) => {
                     self.state = AppState::RefreshFileList;
                 }
                 KeyCode::Char('s') => {
                     self.state = AppState::SortListDialog(self.sort_type);
                 }
-                KeyCode::Char('g') => {
+                KeyCode::Char('g') | KeyCode::PageUp => {
                     self.selected = 0;
                 }
-                KeyCode::Char('G') => {
+                KeyCode::Char('G') | KeyCode::PageDown => {
                     self.selected = self.trashed_files.len() - 1;
                 }
                 KeyCode::Char('q') => {
