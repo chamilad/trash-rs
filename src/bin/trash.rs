@@ -74,7 +74,7 @@ fn main() {
             std::process::exit(EXITCODE_UNSUPPORTED);
         }
 
-        let mut trash_file = match TrashFile::new(abs_file) {
+        let mut trash_file = match TrashFile::new(abs_file, &trash_dir) {
             Ok(v) => v,
             Err(e) => {
                 msg_err(format!("cannot trash '{file_name}': {e}"));

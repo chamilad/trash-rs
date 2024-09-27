@@ -16,13 +16,14 @@ use libc;
 // Does NOT support trashing files from external mounts to user's trash dir
 // Does NOT trash a file from external mounts to home if topdirs cannot be used
 
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum TrashRootType {
     Home,        // trash directory is in user's home directory
     TopDirAdmin, // trash directory is the .Trash/{euid} directory in the top directory for the mount the file exists in
     TopDirUser, // trash directory is the .Trash-{euid} directory in the top directory for the mount the file exists in
 }
 
+#[derive(Clone)]
 pub struct TrashDirectory {
     pub device: Device,
     pub home: PathBuf,
@@ -299,42 +300,10 @@ impl TrashDirectory {
 
     pub fn get_trashed_files(&self) -> Result<Vec<TrashFile>, Box<dyn Error>> {
         let files_dir = self.files.clone();
-        // let trashinfo_dir = self.info.clone();
-
         let mut files: Vec<TrashFile> = vec![];
-
         for child in read_dir(files_dir)? {
             let child = child?;
             let child_path = child.path();
-            // println!("file {}", child_path.display());
-            // let trashinfo_path = trashinfo_dir.join(format!(
-            //     "{}.trashinfo",
-            //     child_path.file_name().unwrap().to_str().unwrap()
-            // ));
-            // // println!("checking {}", trash_info_entry.display());
-            // if !trashinfo_path.is_file() {
-            //     // println!("{} is not a file", trash_info_entry.display());
-            //     continue;
-            // }
-
-            // // println!("reading");
-            // // let trashinfo_content =
-            // // read_to_string(trash_info_entry).expect("couldn't read trashinfo entry");
-            // // println!("read:{}", trashinfo_content);
-            // // let (original_path, deletion_date) = parse_trashinfo(&trashinfo_content)?;
-            // // let original_file = PathBuf::from(&original_path);
-            // // let trashed_entry = TrashedFile {
-            // //     OriginalFile: original_file,
-            // //     DeletionDate: deletion_date,
-            // //     File: child_path,
-            // // };
-            // let trashinfo = TrashInfo::from(&trashinfo_path)?;
-            // let original_file = trashinfo.get_original_path();
-            // let trash_entry = TrashFile {
-            //     original_file,
-            //     files_entry: Some(child_path),
-            //     trashinfo: Some(trashinfo),
-            // };
             let trash_entry = TrashFile::from(child_path, &self)?;
             files.push(trash_entry);
         }
@@ -475,7 +444,7 @@ impl TrashInfo {
     pub fn from(path: &PathBuf) -> Result<Self, Box<dyn Error>> {
         let trashinfo_content = read_to_string(path).expect("couldn't read trashinfo entry");
         let lines: Vec<&str> = trashinfo_content.split("\n").collect();
-        // println!("lines: {:?}", lines);
+
         if lines[0].trim() != "[Trash Info]"
             || !lines[1].starts_with("Path=")
             || !lines[2].starts_with("DeletionDate=")
@@ -485,7 +454,6 @@ impl TrashInfo {
 
         let original_path = &lines[1]["Path=".len()..];
         let deletion_date = &lines[2]["DeletionDate=".len()..];
-        // println!("{original_path}, {deletion_date}");
 
         Ok(TrashInfo {
             original_path: original_path.to_string(),
@@ -499,7 +467,6 @@ impl TrashInfo {
     }
 
     pub fn create_file(&self) -> Result<&PathBuf, Box<dyn Error>> {
-        // let info_entry = self.trashinfo_entry.as_ref().unwrap();
         if self.path.exists() {
             return Err(Box::<dyn Error>::from("info entry already exists"));
         }
@@ -540,14 +507,17 @@ DeletionDate={}
 
 pub struct TrashFile {
     pub original_file: PathBuf,
-    // file_type: FileType,
     pub files_entry: Option<PathBuf>,
     pub trashinfo: Option<TrashInfo>,
+    pub trashroot: TrashDirectory,
 }
 
 impl TrashFile {
     // file to be trashed
-    pub fn new(original_file: PathBuf) -> Result<TrashFile, Box<dyn Error>> {
+    pub fn new(
+        original_file: PathBuf,
+        trashroot: &TrashDirectory,
+    ) -> Result<TrashFile, Box<dyn Error>> {
         if !original_file.is_absolute() {
             return Err(Box::<dyn Error>::from("file path is not absolute"));
         }
@@ -556,6 +526,7 @@ impl TrashFile {
             original_file,
             files_entry: None,
             trashinfo: None,
+            trashroot: trashroot.clone(),
         })
     }
 
@@ -578,6 +549,7 @@ impl TrashFile {
             original_file,
             files_entry: Some(trash_file),
             trashinfo: Some(trashinfo),
+            trashroot: trash_dir.clone(),
         };
 
         Ok(trash_entry)
@@ -607,6 +579,39 @@ impl TrashFile {
 
         rename(&self.files_entry.as_ref().unwrap(), &self.original_file)?;
         Ok(&self.original_file)
+    }
+
+    // size in bytes (not the size on disk)
+    pub fn get_size(&self) -> Result<u64, Box<dyn Error>> {
+        if self.files_entry == None || self.trashinfo == None {
+            return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
+        }
+
+        let size = if self.files_entry.as_ref().unwrap().is_symlink() {
+            self.files_entry
+                .as_ref()
+                .unwrap()
+                .symlink_metadata()
+                .unwrap()
+                .st_size()
+        } else if self.files_entry.as_ref().unwrap().is_dir() {
+            get_dir_size(self.files_entry.as_ref().unwrap())?
+            // self.files_entry
+            //     .as_ref()
+            //     .unwrap()
+            //     .metadata()
+            //     .unwrap()
+            //     .st_size()
+        } else {
+            self.files_entry
+                .as_ref()
+                .unwrap()
+                .metadata()
+                .unwrap()
+                .st_size()
+        };
+
+        Ok(size)
     }
 }
 
@@ -761,8 +766,9 @@ pub fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
     Ok(total_size)
 }
 
+#[derive(Clone)]
 pub struct Device {
-    dev_num: DeviceNumber,
+    pub dev_num: DeviceNumber,
     dev_name: Option<String>,
     mount_root: Option<PathBuf>,
     mount_point: Option<PathBuf>,
@@ -811,8 +817,9 @@ impl Device {
     }
 }
 
+#[derive(Clone)]
 pub struct DeviceNumber {
-    dev_id: u64,
+    pub dev_id: u64,
     major: u32,
     minor: u32,
 }

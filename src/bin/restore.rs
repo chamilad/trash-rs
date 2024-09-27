@@ -1,11 +1,9 @@
-// use std::env;
 use std::error::Error;
 use std::fs::read_dir;
-// use std::path::PathBuf;
 
 use crossterm::event::{self, Event, KeyCode};
 use libtrash::*;
-use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::DisableMouseCapture;
 use ratatui::crossterm::event::EnableMouseCapture;
 use ratatui::crossterm::execute;
@@ -15,10 +13,11 @@ use ratatui::layout::{Alignment, Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
-use ratatui::{Frame, Terminal};
+use ratatui::{restore, Frame, Terminal};
+use std::cmp::Ordering::Equal;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
-// use urlencoding::decode;
+use std::os::linux::fs::MetadataExt;
 
 const VERBOSE_MODE: bool = false;
 
@@ -34,25 +33,27 @@ const UNSELECTED_FG_COLOR_LINK: Color = Color::Magenta;
 const TITLE_HEIGHT: u16 = 3;
 const FOOTER_HEIGHT: u16 = 3;
 
-#[derive(PartialEq)]
-enum AppState {
-    MainScreen,
-    DeletionConfirmation(usize),
-    Exiting,
-    RefreshFileList,
+#[derive(Clone, Copy, PartialEq)]
+enum SortType {
+    DeletionDate,
+    TrashRoot,
+    Size,
 }
 
-// #[derive(Debug, Clone)]
-// struct TrashedFile {
-//     OriginalFile: PathBuf,
-//     DeletionDate: String,
-//     TrashFile: PathBuf,
-// }
+#[derive(PartialEq)]
+enum AppState {
+    RefreshFileList,
+    MainScreen,
+    DeletionConfirmation(usize),
+    SortListDialog(SortType),
+    Exiting,
+}
 
 struct App {
     state: AppState,
     trashed_files: Vec<TrashFile>,
     selected: usize,
+    sort_type: SortType,
 }
 
 impl App {
@@ -61,6 +62,7 @@ impl App {
             state: AppState::RefreshFileList,
             trashed_files: vec![],
             selected: 0,
+            sort_type: SortType::DeletionDate,
         }
     }
 
@@ -91,7 +93,7 @@ impl App {
         f.render_widget(title, chunks[0]);
 
         // ================== mid section
-        match self.state {
+        match &self.state {
             AppState::MainScreen => {
                 let midsection_chunks = Layout::default()
                     .direction(Direction::Horizontal)
@@ -138,6 +140,14 @@ impl App {
                         };
 
                         let entry = if i == self.selected {
+                            let f_size = file.get_size().expect("error while getting file size");
+                            let f_size_display = if f_size <= 1000 {
+                                format!("{f_size}B")
+                            } else if f_size <= 1000000 {
+                                format!("{}KB", f_size / 1000)
+                            } else {
+                                format!("{}MB", f_size / 1000000)
+                            };
                             // generate description
                             selected_desc = Text::from(vec![
                                 Line::from(vec![
@@ -174,6 +184,13 @@ impl App {
                                         Style::default().fg(Color::Gray),
                                     ),
                                 ]),
+                                Line::from(vec![
+                                    Span::styled(
+                                        "Size: ",
+                                        Style::default().add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(f_size_display, Style::default().fg(Color::Gray)),
+                                ]),
                             ]);
 
                             // generate file preview
@@ -196,7 +213,7 @@ impl App {
                                         if i > preview_height as usize {
                                             break;
                                         }
-
+                                        // todo: bug check for symlink before is_dir()
                                         let line = if entry.is_dir() {
                                             Line::from(vec![Span::styled(
                                                 entry
@@ -265,6 +282,7 @@ impl App {
                                 } else {
                                     let prev_reader = BufReader::new(prev_file);
                                     let prev_content = if prev_reader.lines().count() == 0 {
+                                        // todo: bug: .desktop file is marked as empty
                                         "empty file".to_string()
                                     } else {
                                         let prev_file =
@@ -353,11 +371,35 @@ impl App {
                 f.render_widget(preview_text, desc_chunks[1]);
             }
             AppState::DeletionConfirmation(choice) => {
+                // question in some mixed style
+                let selected_file = &self.trashed_files[self.selected];
+                let question = Line::from(vec![
+                    Span::styled("This will restore file ", Style::default()),
+                    Span::styled(
+                        format!(
+                            "'{}' ",
+                            selected_file
+                                .original_file
+                                .file_name()
+                                .unwrap()
+                                .to_str()
+                                .unwrap(),
+                        ),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("to ", Style::default()),
+                    Span::styled(
+                        format!("'{}' ", selected_file.original_file.display().to_string(),),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("?", Style::default()),
+                ]);
+
                 // space between buttons
                 let spacer = Span::styled("      ", Style::default());
 
                 // illusion of buttons
-                let buttons = if choice == 0 {
+                let buttons = if *choice == 0 {
                     Line::from(vec![
                         Span::styled(
                             "[Confirm]",
@@ -383,30 +425,6 @@ impl App {
                     ])
                 };
 
-                // question in some mixed style
-                let selected_file = &self.trashed_files[self.selected];
-                let question = Line::from(vec![
-                    Span::styled("This will restore file ", Style::default()),
-                    Span::styled(
-                        format!(
-                            "'{}' ",
-                            selected_file
-                                .original_file
-                                .file_name()
-                                .unwrap()
-                                .to_str()
-                                .unwrap(),
-                        ),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("to ", Style::default()),
-                    Span::styled(
-                        format!("'{}' ", selected_file.original_file.display().to_string(),),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("?", Style::default()),
-                ]);
-
                 // popup dialog
                 let area = f.area();
                 let block = Block::bordered()
@@ -414,6 +432,100 @@ impl App {
                     .style(Style::default().bg(Color::Gray).fg(Color::Black));
                 let area = popup_area(area, 40, 10);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
+                    .wrap(Wrap { trim: false })
+                    .alignment(Alignment::Center)
+                    .block(block);
+                f.render_widget(Clear, area); //this clears out the background
+                f.render_widget(dialog, area);
+            }
+            AppState::SortListDialog(choice) => {
+                let question = Line::from(vec![Span::styled(
+                    "Select sort by column",
+                    Style::default(),
+                )]);
+
+                let mut choices = match choice {
+                    SortType::DeletionDate => vec![
+                        Line::from(vec![
+                            Span::styled(
+                                "[x]",
+                                Style::default()
+                                    .add_modifier(Modifier::BOLD)
+                                    .bg(Color::Black)
+                                    .fg(Color::White),
+                            ),
+                            Span::styled(
+                                " Deleted on",
+                                Style::default().bg(Color::Black).fg(Color::White),
+                            ),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("[ ]", Style::default()),
+                            Span::styled(" Origin    ", Style::default()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("[ ]", Style::default()),
+                            Span::styled(" Size      ", Style::default()),
+                        ]),
+                    ],
+                    SortType::TrashRoot => vec![
+                        Line::from(vec![
+                            Span::styled("[ ]", Style::default()),
+                            Span::styled(" Deleted on", Style::default()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled(
+                                "[x]",
+                                Style::default()
+                                    .add_modifier(Modifier::BOLD)
+                                    .bg(Color::Black)
+                                    .fg(Color::White),
+                            ),
+                            Span::styled(
+                                " Origin    ",
+                                Style::default().bg(Color::Black).fg(Color::White),
+                            ),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("[ ]", Style::default()),
+                            Span::styled(" Size      ", Style::default()),
+                        ]),
+                    ],
+                    SortType::Size => vec![
+                        Line::from(vec![
+                            Span::styled("[ ]", Style::default()),
+                            Span::styled(" Deleted on", Style::default()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("[ ]", Style::default()),
+                            Span::styled(" Origin    ", Style::default()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled(
+                                "[x]",
+                                Style::default()
+                                    .add_modifier(Modifier::BOLD)
+                                    .bg(Color::Black)
+                                    .fg(Color::White),
+                            ),
+                            Span::styled(
+                                " Size      ",
+                                Style::default().bg(Color::Black).fg(Color::White),
+                            ),
+                        ]),
+                    ],
+                };
+
+                // popup dialog
+                let mut dialog_content = vec![question, Line::from(vec![])];
+                dialog_content.append(&mut choices);
+
+                let area = f.area();
+                let block = Block::bordered()
+                    .title("Sort files by")
+                    .style(Style::default().bg(Color::Gray).fg(Color::Black));
+                let area = popup_area(area, 30, 10);
+                let dialog = Paragraph::new(dialog_content)
                     .wrap(Wrap { trim: false })
                     .alignment(Alignment::Center)
                     .block(block);
@@ -458,6 +570,10 @@ impl App {
                         // todo: refresh file list
                         self.state = AppState::RefreshFileList;
                     }
+                    KeyCode::Char('s') => {
+                        // todo: refresh file list
+                        self.state = AppState::SortListDialog(self.sort_type);
+                    }
                     KeyCode::Char('q') => {
                         self.state = AppState::Exiting;
                     }
@@ -474,16 +590,12 @@ impl App {
                     }
                     KeyCode::Enter => {
                         // Confirm the action if Yes is selected
-                        // if let AppState::DeletionConfirmation(choice) = self.state {
                         if choice == 0 {
-                            // Execute action on the selected file
                             let selected_file = &self.trashed_files[self.selected];
-                            selected_file.restore();
-                            // restore(selected_file);
-                            // println!("Performing action on: {:?}", selected_file.);
+                            let _ = selected_file.restore().expect("could not restore file");
                         }
-                        // }
-                        // Return to file list after action or cancel
+
+                        // Refresh and return to file list after action or cancel
                         self.state = AppState::RefreshFileList;
                     }
                     KeyCode::Esc | KeyCode::Char('q') => {
@@ -493,6 +605,32 @@ impl App {
                     _ => {}
                 }
             }
+            AppState::SortListDialog(choice) => match key {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let next_choice = match choice {
+                        SortType::DeletionDate => SortType::TrashRoot,
+                        SortType::TrashRoot => SortType::Size,
+                        SortType::Size => SortType::Size,
+                    };
+                    self.state = AppState::SortListDialog(next_choice);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let prev_choice = match choice {
+                        SortType::DeletionDate => SortType::DeletionDate,
+                        SortType::TrashRoot => SortType::DeletionDate,
+                        SortType::Size => SortType::TrashRoot,
+                    };
+                    self.state = AppState::SortListDialog(prev_choice);
+                }
+                KeyCode::Enter => {
+                    self.sort_type = choice;
+                    self.state = AppState::RefreshFileList;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.state = AppState::RefreshFileList;
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -500,7 +638,7 @@ impl App {
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Setup terminal
-    enable_raw_mode();
+    enable_raw_mode()?;
     let mut stderr = io::stderr();
     execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
 
@@ -513,7 +651,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         match app.state {
             AppState::RefreshFileList => {
-                app.trashed_files = get_trashed_files()?;
+                app.trashed_files = get_trashed_files(&app.sort_type)?;
                 app.state = AppState::MainScreen;
             }
             AppState::Exiting => {
@@ -543,11 +681,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     terminal.show_cursor()?;
 
-    ratatui::restore();
+    restore();
     Ok(())
 }
 
-fn get_trashed_files() -> Result<Vec<TrashFile>, Box<dyn Error>> {
+fn get_trashed_files(sort: &SortType) -> Result<Vec<TrashFile>, Box<dyn Error>> {
     // get user trash directory
     let user_home = get_home_dir().expect("couldn't get user home directory");
     let user_trash_dir = TrashDirectory::resolve_for_file(&user_home, VERBOSE_MODE)
@@ -560,66 +698,84 @@ fn get_trashed_files() -> Result<Vec<TrashFile>, Box<dyn Error>> {
     //
     // todo: do the same for every mounted drive
 
-    // let files_dir = user_trash_dir.files;
-    // let trashinfo_dir = user_trash_dir.info;
-
     let mut files: Vec<TrashFile> = vec![];
     let mut home_trash_files = user_trash_dir.get_trashed_files()?;
     files.append(&mut home_trash_files);
+    files.sort_by(|a, b| match sort {
+        SortType::DeletionDate => {
+            let a_date = a.trashinfo.clone().unwrap().deletion_date;
+            let b_date = b.trashinfo.clone().unwrap().deletion_date;
+            b_date.cmp(&a_date)
+        }
+        SortType::TrashRoot => {
+            let a_dev = a.trashroot.device.clone().dev_num.dev_id;
+            let b_dev = b.trashroot.device.clone().dev_num.dev_id;
+            let cmp_dev = a_dev.cmp(&b_dev);
+            match cmp_dev {
+                Equal => {
+                    let a_date = a.trashinfo.clone().unwrap().deletion_date;
+                    let b_date = b.trashinfo.clone().unwrap().deletion_date;
+                    b_date.cmp(&a_date)
+                }
+                other => other,
+            }
+        }
+        SortType::Size => {
+            // todo: becaue link
+            // println!("b_files: {}", b.files_entry.as_ref().unwrap().display());
+            // let a_size = match a.files_entry.as_ref().unwrap().is_symlink() {
+            //     true => {
+            //         a.files_entry
+            //             .as_ref()
+            //             .unwrap()
+            //             .symlink_metadata()
+            //             .unwrap()
+            //             .st_size();
+            //     }
+            //     false => {
+            //         a.files_entry
+            //             .as_ref()
+            //             .unwrap()
+            //             .metadata()
+            //             .unwrap()
+            //             .st_size();
+            //     }
+            // };
+            // let b_size = match b.files_entry.as_ref().unwrap().is_symlink() {
+            //     true => {
+            //         b.files_entry
+            //             .as_ref()
+            //             .unwrap()
+            //             .symlink_metadata()
+            //             .unwrap()
+            //             .st_size();
+            //     }
+            //     false => {
+            //         b.files_entry
+            //             .as_ref()
+            //             .unwrap()
+            //             .metadata()
+            //             .unwrap()
+            //             .st_size();
+            //     }
+            // };
+            let a_size = a.get_size().expect("error while getting file size");
+            let b_size = b.get_size().expect("error while getting file size");
+            let cmp_size = b_size.cmp(&a_size);
 
-    // for child in read_dir(files_dir)? {
-    //     let child = child?;
-    //     let child_path = child.path();
-    //     // println!("file {}", child_path.display());
-    //     let trash_info_entry = trashinfo_dir.join(format!(
-    //         "{}.trashinfo",
-    //         child_path.file_name().unwrap().to_str().unwrap()
-    //     ));
-    //     // println!("checking {}", trash_info_entry.display());
-    //     if !trash_info_entry.is_file() {
-    //         // println!("{} is not a file", trash_info_entry.display());
-    //         continue;
-    //     }
-
-    //     // println!("reading");
-    //     let trashinfo_content =
-    //         read_to_string(trash_info_entry).expect("couldn't read trashinfo entry");
-    //     // println!("read:{}", trashinfo_content);
-    //     let (original_path, deletion_date) = parse_trashinfo(&trashinfo_content)?;
-    //     let original_file = PathBuf::from(&original_path);
-    //     let trashed_entry = TrashedFile {
-    //         OriginalFile: original_file,
-    //         DeletionDate: deletion_date,
-    //         TrashFile: child_path,
-    //     };
-    //     files.push(trashed_entry);
-    // }
+            match cmp_size {
+                Equal => {
+                    let a_date = a.trashinfo.clone().unwrap().deletion_date;
+                    let b_date = b.trashinfo.clone().unwrap().deletion_date;
+                    b_date.cmp(&a_date)
+                }
+                other => other,
+            }
+        }
+    });
 
     Ok(files)
 }
-
-// fn parse_trashinfo(content: &str) -> Result<(String, String), Box<dyn Error>> {
-//     let lines: Vec<&str> = content.split("\n").collect();
-//     // println!("lines: {:?}", lines);
-//     if lines[0].trim() != "[Trash Info]"
-//         || !lines[1].starts_with("Path=")
-//         || !lines[2].starts_with("DeletionDate=")
-//     {
-//         return Err(Box::<dyn Error>::from("not a valid trashinfo entry"));
-//     }
-
-//     let original_path = &lines[1]["Path=".len()..];
-//     let original_path = decode(original_path).expect("utf-8").into_owned();
-//     let deletion_date = &lines[2]["DeletionDate=".len()..];
-//     // println!("{original_path}, {deletion_date}");
-
-//     Ok((original_path, deletion_date.to_string()))
-// }
-
-// fn restore(trashed_file: &TrashedFile) -> Result<(), Box<dyn Error>> {
-//     rename(&trashed_file.TrashFile, &trashed_file.OriginalFile)?;
-//     Ok(())
-// }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
 fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
