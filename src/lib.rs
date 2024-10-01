@@ -33,6 +33,26 @@ pub struct TrashDirectory {
 }
 
 impl TrashDirectory {
+    pub fn from(
+        root: PathBuf,
+        device: Device,
+        root_type: TrashRootType,
+    ) -> Result<Self, Box<dyn Error>> {
+        let files_dir = root.join("files");
+        must_have_dir(&files_dir)?;
+
+        let info_dir = root.join("info");
+        must_have_dir(&info_dir)?;
+
+        Ok(TrashDirectory {
+            device,
+            root_type,
+            home: root,
+            files: files_dir,
+            info: info_dir,
+        })
+    }
+
     // derive trash directory according to trash spec
     // todo: support expunge dir (not sure how to schedule job for permanent deletion)
     pub fn resolve_for_file(
@@ -74,7 +94,7 @@ impl TrashDirectory {
                 euid = libc::geteuid();
             }
 
-            let trash_home = match Self::try_topdir_admin_trash(top_dir.clone(), euid) {
+            let trash_home = match Self::try_topdir_admin_trash(&top_dir.clone(), euid, true) {
                 Ok(v) => {
                     trash_root_type = TrashRootType::TopDirAdmin;
                     v
@@ -90,7 +110,7 @@ impl TrashDirectory {
                     // the user.
                     msg_err(format!("top directory trash for file is unusable: {e}"));
 
-                    let top_dir_user_trash = Self::try_topdir_user_trash(top_dir, euid)?;
+                    let top_dir_user_trash = Self::try_topdir_user_trash(&top_dir, euid, true)?;
                     trash_root_type = TrashRootType::TopDirUser;
                     top_dir_user_trash
                 }
@@ -311,6 +331,61 @@ impl TrashDirectory {
         Ok(files)
     }
 
+    pub fn get_all_trash_roots() -> Result<Vec<TrashDirectory>, Box<dyn Error>> {
+        // filter /proc/mounts
+        let mounts_content = read_to_string("/proc/mounts")?;
+        let mounts: Vec<&str> = mounts_content.lines().collect();
+
+        let mut trash_roots: Vec<TrashDirectory> = vec![];
+        for mount in mounts {
+            let fields: Vec<&str> = mount.split_whitespace().collect();
+            // drop if device not in /dev
+            // drop if device is /dev/loop* (snap if present)
+            let device = fields[0];
+            if !device.starts_with("/dev") || device.starts_with("/dev/loop") {
+                continue;
+            }
+
+            // drop if mounted to /boot, typically not used for external trashing
+            let mount_root = fields[1];
+            if mount_root.starts_with("/boot") {
+                continue;
+            }
+
+            // drop if trashroot not present
+            let mount_path = PathBuf::from(mount_root);
+            let euid: u32;
+            unsafe {
+                euid = libc::geteuid();
+            }
+
+            match TrashDirectory::topdir_admin_trash_exists(&mount_path, euid) {
+                Ok(v) => {
+                    let abs_path = to_abs_path(&mount_path)?;
+                    let dev = Device::for_path(&abs_path)?;
+                    let trash_dir = TrashDirectory::from(v, dev, TrashRootType::TopDirAdmin)?;
+                    trash_roots.push(trash_dir);
+                }
+                Err(_) => match TrashDirectory::topdir_user_trash_exists(&mount_path, euid) {
+                    Ok(v) => {
+                        let abs_path = to_abs_path(&mount_path)?;
+                        let dev = Device::for_path(&abs_path)?;
+                        let trash_dir = TrashDirectory::from(v, dev, TrashRootType::TopDirUser)?;
+                        trash_roots.push(trash_dir);
+                    }
+                    Err(_) => continue,
+                },
+            };
+        }
+
+        Ok(trash_roots)
+    }
+
+    // get a unique file name suffix to file the potential trash file under
+    //
+    // files/directories with the same name can be trashed from difference
+    // sources (or even from the same source).This should be handled without
+    // exposing the details to the user
     pub fn get_trashable_file_name(stripped_file_name: String, idx: u32) -> String {
         // nautilus trash files when duplicated start from suffix 2
         if idx < 2 {
@@ -327,9 +402,17 @@ impl TrashDirectory {
         format!("{}.{}", stripped_file_name, idx)
     }
 
-    pub fn try_topdir_admin_trash(
-        top_dir: PathBuf,
+    pub fn topdir_admin_trash_exists(
+        top_dir: &PathBuf,
         euid: libc::uid_t,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        TrashDirectory::try_topdir_admin_trash(top_dir, euid, false)
+    }
+
+    pub fn try_topdir_admin_trash(
+        top_dir: &PathBuf,
+        euid: libc::uid_t,
+        create_if_not_exist: bool,
     ) -> Result<PathBuf, Box<dyn Error>> {
         // An administrator can create an $topdir/.Trash directory. The
         // permissions on this directories should permit all users who
@@ -337,7 +420,7 @@ impl TrashDirectory {
         // in the permissions must be set, if the file system supports it.
         //
         // check if $topdir/.Trash exist and is usable
-        let admin_trash = top_dir.join(".Trash");
+        let admin_trash = top_dir.clone().join(".Trash");
         let admin_trash_location = admin_trash.to_str().unwrap();
         match admin_trash.try_exists() {
             Ok(true) => {
@@ -368,7 +451,16 @@ impl TrashDirectory {
                     //
                     // $topdir/.Trash/$uid
                     let user_trash_home = admin_trash.join(euid.to_string());
-                    must_have_dir(&user_trash_home)?;
+                    if create_if_not_exist {
+                        must_have_dir(&user_trash_home)?;
+                    } else {
+                        if !dir_exists(&user_trash_home) {
+                            return Err(Box::<dyn Error>::from(format!(
+                                "user directory in top directory trash '{}' isn't writable",
+                                user_trash_home.display(),
+                            )));
+                        }
+                    }
                     if !is_writable_dir(&user_trash_home) {
                         let user_trash_location = user_trash_home.to_str().unwrap();
                         return Err(Box::<dyn Error>::from(format!(
@@ -389,9 +481,17 @@ impl TrashDirectory {
         }
     }
 
-    pub fn try_topdir_user_trash(
-        top_dir: PathBuf,
+    pub fn topdir_user_trash_exists(
+        top_dir: &PathBuf,
         euid: libc::uid_t,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        TrashDirectory::try_topdir_user_trash(top_dir, euid, false)
+    }
+
+    pub fn try_topdir_user_trash(
+        top_dir: &PathBuf,
+        euid: libc::uid_t,
+        create_if_not_exist: bool,
     ) -> Result<PathBuf, Box<dyn Error>> {
         // topdir approach 2
         //
@@ -402,8 +502,18 @@ impl TrashDirectory {
         //
         // $topdir/.Trash-uid
         let user_trash_name = format!(".Trash-{}", euid);
-        let user_trash_home = top_dir.join(user_trash_name);
-        must_have_dir(&user_trash_home)?;
+        let user_trash_home = top_dir.clone().join(user_trash_name);
+        if create_if_not_exist {
+            must_have_dir(&user_trash_home)?;
+        } else {
+            if !dir_exists(&user_trash_home) {
+                return Err(Box::<dyn Error>::from(format!(
+                    "user directory in top directory trash '{}' isn't writable",
+                    user_trash_home.display(),
+                )));
+            }
+        }
+
         if !is_writable_dir(&user_trash_home) {
             let user_trash_location = user_trash_home.to_str().unwrap();
             return Err(Box::<dyn Error>::from(format!(
@@ -659,6 +769,13 @@ pub fn is_writable_dir(path: &PathBuf) -> bool {
     true
 }
 
+pub fn dir_exists(path: &PathBuf) -> bool {
+    match path.try_exists() {
+        Ok(v) => v,
+        Err(_) => false,
+    }
+}
+
 // make sure the specified path exists as a directory.
 // if the path doesn't exist, the directory is created.
 // if it exists and is not a directory, an Error is returned
@@ -746,9 +863,9 @@ pub fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
         for child in read_dir(path)? {
             let child = child?;
             let child_path = child.path();
-            if child_path.is_dir() {
+            if !child_path.is_symlink() & child_path.is_dir() {
                 total_size += get_dir_size(&child_path)?;
-            } else if child_path.is_file() && !child_path.is_symlink() {
+            } else if !child_path.is_symlink() && child_path.is_file() {
                 let block_count = child_path.metadata()?.st_blocks();
                 total_size += block_count * 512;
             }
@@ -763,9 +880,9 @@ pub fn get_dir_size(path: &PathBuf) -> Result<u64, Box<dyn Error>> {
 #[derive(Clone)]
 pub struct Device {
     pub dev_num: DeviceNumber,
-    dev_name: Option<String>,
+    dev_name: Option<String>, // only available for external mounts
     mount_root: Option<PathBuf>,
-    mount_point: Option<PathBuf>,
+    pub mount_point: Option<PathBuf>,
 }
 
 impl Device {
@@ -847,6 +964,8 @@ impl DeviceNumber {
     }
 }
 
+// convert a file path to absolute path without traversing symlinks
+// todo: test, shamelessly stolen from so
 pub fn to_abs_path(path: impl AsRef<Path>) -> Result<PathBuf, Box<dyn Error>> {
     let path = path.as_ref();
     let abs_path = if path.is_absolute() {

@@ -17,6 +17,7 @@ use ratatui::{restore, Frame, Terminal};
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
+use std::path::MAIN_SEPARATOR_STR;
 
 const VERBOSE_MODE: bool = false;
 
@@ -31,6 +32,10 @@ const UNSELECTED_FG_COLOR_LINK: Color = Color::Magenta;
 
 const TITLE_HEIGHT: u16 = 3;
 const FOOTER_HEIGHT: u16 = 3;
+
+// todo - empty trash bin function
+//  1. empty all trash - may error out because of permissions
+//  2. empty home trash - sure fire
 
 #[derive(Clone, Copy, PartialEq)]
 enum SortType {
@@ -117,7 +122,6 @@ impl App {
                         .floor() as i32; // 60% of the midsection height
 
                 // ================= file list
-                // todo: sort by deletion date and type (dir first)
                 let list_items: Vec<ListItem> = self
                     .trashed_files
                     .iter()
@@ -131,22 +135,13 @@ impl App {
                             .into_string()
                             .unwrap();
 
-                        let original_path = file.original_file.to_str().unwrap();
-
                         // Calculate padding to fill the remaining space for full line width
                         let padding =
                             (file_list_width as usize).saturating_sub(original_file_name.len());
                         let padded_str = format!("{}{}", original_file_name, " ".repeat(padding));
 
-                        let f_type: String = if file.files_entry.as_ref().unwrap().is_dir() {
-                            "Directory".to_string()
-                        } else if file.files_entry.as_ref().unwrap().is_symlink() {
-                            "Link".to_string()
-                        } else {
-                            "File".to_string()
-                        };
-
                         let entry = if i == self.selected {
+                            // generate description
                             let f_size = file.get_size().expect("error while getting file size");
                             let f_size_display = if f_size <= 1000 {
                                 format!("{f_size}B")
@@ -155,7 +150,26 @@ impl App {
                             } else {
                                 format!("{}MB", f_size / 1000000)
                             };
-                            // generate description
+
+                            let original_path = match file.trashroot.root_type {
+                                TrashRootType::Home => file.original_file.display().to_string(),
+                                _ => format!(
+                                    "{}{}{}",
+                                    file.trashroot.home.parent().unwrap().display().to_string(),
+                                    MAIN_SEPARATOR_STR,
+                                    file.original_file.to_str().unwrap()
+                                ),
+                            };
+
+                            let f_type: String = if file.files_entry.as_ref().unwrap().is_symlink()
+                            {
+                                "Link".to_string()
+                            } else if file.files_entry.as_ref().unwrap().is_dir() {
+                                "Directory".to_string()
+                            } else {
+                                "File".to_string()
+                            };
+
                             selected_desc = Text::from(vec![
                                 Line::from(vec![
                                     Span::styled(
@@ -201,62 +215,7 @@ impl App {
                             ]);
 
                             // generate file preview
-                            preview = if file.files_entry.as_ref().unwrap().is_dir() {
-                                // show contents up to 10
-                                let mut lines = vec![];
-                                let entries = read_dir(file.files_entry.as_ref().unwrap().clone())
-                                    .unwrap()
-                                    .map(|res| res.map(|e| e.path()))
-                                    .collect::<Result<Vec<_>, io::Error>>()
-                                    .unwrap();
-
-                                if entries.len() == 0 {
-                                    lines.push(Line::from(vec![Span::styled(
-                                        "empty directory",
-                                        Style::default().fg(Color::Gray),
-                                    )]));
-                                } else {
-                                    for (i, entry) in entries.into_iter().enumerate() {
-                                        if i > preview_height as usize {
-                                            break;
-                                        }
-                                        // todo: bug check for symlink before is_dir()
-                                        let line = if entry.is_dir() {
-                                            Line::from(vec![Span::styled(
-                                                entry
-                                                    .file_name()
-                                                    .unwrap()
-                                                    .to_os_string()
-                                                    .into_string()
-                                                    .unwrap(),
-                                                Style::default().fg(UNSELECTED_FG_COLOR_DIR),
-                                            )])
-                                        } else if entry.is_symlink() {
-                                            Line::from(vec![Span::styled(
-                                                entry
-                                                    .file_name()
-                                                    .unwrap()
-                                                    .to_os_string()
-                                                    .into_string()
-                                                    .unwrap(),
-                                                Style::default().fg(UNSELECTED_FG_COLOR_LINK),
-                                            )])
-                                        } else {
-                                            Line::from(vec![Span::styled(
-                                                entry
-                                                    .file_name()
-                                                    .unwrap()
-                                                    .to_os_string()
-                                                    .into_string()
-                                                    .unwrap(),
-                                                Style::default().fg(UNSELECTED_FG_COLOR_FILE),
-                                            )])
-                                        };
-                                        lines.push(line);
-                                    }
-                                }
-                                Text::from(lines)
-                            } else if file.files_entry.as_ref().unwrap().is_symlink() {
+                            preview = if file.files_entry.as_ref().unwrap().is_symlink() {
                                 match fs::read_link(file.files_entry.as_ref().unwrap().clone()) {
                                     Ok(target_path) => {
                                         let target_path_str =
@@ -277,6 +236,61 @@ impl App {
                                         Style::default().fg(Color::Gray),
                                     ),
                                 }
+                            } else if file.files_entry.as_ref().unwrap().is_dir() {
+                                // show contents up to preview_height
+                                let mut lines = vec![];
+                                let entries = read_dir(file.files_entry.as_ref().unwrap().clone())
+                                    .unwrap()
+                                    .map(|res| res.map(|e| e.path()))
+                                    .collect::<Result<Vec<_>, io::Error>>()
+                                    .unwrap();
+
+                                if entries.len() == 0 {
+                                    lines.push(Line::from(vec![Span::styled(
+                                        "empty directory",
+                                        Style::default().fg(Color::Gray),
+                                    )]));
+                                } else {
+                                    for (i, entry) in entries.into_iter().enumerate() {
+                                        if i > preview_height as usize {
+                                            break;
+                                        }
+
+                                        let line = if entry.is_symlink() {
+                                            Line::from(vec![Span::styled(
+                                                entry
+                                                    .file_name()
+                                                    .unwrap()
+                                                    .to_os_string()
+                                                    .into_string()
+                                                    .unwrap(),
+                                                Style::default().fg(UNSELECTED_FG_COLOR_LINK),
+                                            )])
+                                        } else if entry.is_dir() {
+                                            Line::from(vec![Span::styled(
+                                                entry
+                                                    .file_name()
+                                                    .unwrap()
+                                                    .to_os_string()
+                                                    .into_string()
+                                                    .unwrap(),
+                                                Style::default().fg(UNSELECTED_FG_COLOR_DIR),
+                                            )])
+                                        } else {
+                                            Line::from(vec![Span::styled(
+                                                entry
+                                                    .file_name()
+                                                    .unwrap()
+                                                    .to_os_string()
+                                                    .into_string()
+                                                    .unwrap(),
+                                                Style::default().fg(UNSELECTED_FG_COLOR_FILE),
+                                            )])
+                                        };
+                                        lines.push(line);
+                                    }
+                                }
+                                Text::from(lines)
                             } else if file.files_entry.as_ref().unwrap().is_file() {
                                 // check if file is a text readable
                                 let mut prev_file =
@@ -316,31 +330,47 @@ impl App {
                                 Text::styled("unknown file type", Style::default().fg(Color::Gray))
                             };
 
-                            let fg_color: Color = if file.files_entry.as_ref().unwrap().is_dir() {
-                                SELECTED_FG_COLOR_DIR
-                            } else if file.files_entry.as_ref().unwrap().is_symlink() {
-                                SELECTED_FG_COLOR_LINK
-                            } else {
-                                SELECTED_FG_COLOR_FILE
-                            };
+                            // generate list item entry
+                            let (fg_color, entry_filetype) =
+                                if file.files_entry.as_ref().unwrap().is_symlink() {
+                                    (SELECTED_FG_COLOR_LINK, Span::from("🔗"))
+                                } else if file.files_entry.as_ref().unwrap().is_dir() {
+                                    (SELECTED_FG_COLOR_DIR, Span::from("📁"))
+                                } else {
+                                    (SELECTED_FG_COLOR_FILE, Span::from("📄"))
+                                };
 
-                            Span::styled(
+                            let entry_text = Span::styled(
                                 padded_str,
                                 Style::default()
                                     .bg(SELECTED_BG_COLOR)
                                     .fg(fg_color)
                                     .add_modifier(Modifier::BOLD),
-                            )
-                        } else {
-                            let fg_color: Color = if file.files_entry.as_ref().unwrap().is_dir() {
-                                UNSELECTED_FG_COLOR_DIR
-                            } else if file.files_entry.as_ref().unwrap().is_symlink() {
-                                UNSELECTED_FG_COLOR_LINK
-                            } else {
-                                UNSELECTED_FG_COLOR_FILE
+                            );
+
+                            let entry_symbol = match file.trashroot.root_type {
+                                TrashRootType::Home => Span::from("  "),
+                                _ => Span::from("💾"),
                             };
-                            Span::styled(original_file_name, Style::default().fg(fg_color))
+                            Line::from(vec![entry_symbol, entry_filetype, entry_text])
+                        } else {
+                            let (fg_color, entry_filetype) =
+                                if file.files_entry.as_ref().unwrap().is_symlink() {
+                                    (UNSELECTED_FG_COLOR_LINK, Span::from("🔗"))
+                                } else if file.files_entry.as_ref().unwrap().is_dir() {
+                                    (UNSELECTED_FG_COLOR_DIR, Span::from("📁"))
+                                } else {
+                                    (UNSELECTED_FG_COLOR_FILE, Span::from("📄"))
+                                };
+                            let entry_text =
+                                Span::styled(original_file_name, Style::default().fg(fg_color));
+                            let entry_symbol = match file.trashroot.root_type {
+                                TrashRootType::Home => Span::from("  "),
+                                _ => Span::from("💾"),
+                            };
+                            Line::from(vec![entry_symbol, entry_filetype, entry_text])
                         };
+
                         ListItem::new(entry)
                     })
                     .collect();
@@ -856,70 +886,70 @@ fn get_trashed_files(sort: &SortType) -> Result<Vec<TrashFile>, Box<dyn Error>> 
     let user_trash_dir = TrashDirectory::resolve_for_file(&user_home, VERBOSE_MODE)
         .expect("couldn't resolve user home trash dir");
 
-    // iterate through entries in files and read the matching trashinfo, show the filename based on the entry
-    // in trashinfo
-    // let mut home_files: Vec<TrashedFile> =
-    // get_trashed_files(user_trash_dir).expect("error while iterating trash files");
-    //
-    // todo: do the same for every mounted drive
+    // get all trash locations currently mounted
+    let mut trash_roots: Vec<TrashDirectory> = TrashDirectory::get_all_trash_roots()?;
+    trash_roots.push(user_trash_dir);
 
     let mut files: Vec<TrashFile> = vec![];
-    let mut home_trash_files = user_trash_dir.get_trashed_files()?;
-    files.append(&mut home_trash_files);
-    files.sort_by(|a, b| match sort {
-        SortType::DeletionDate => {
-            // sort by deletion date, if equal directories first
-            let a_date = a.trashinfo.clone().unwrap().deletion_date;
-            let b_date = b.trashinfo.clone().unwrap().deletion_date;
-            let cmp_date = b_date.cmp(&a_date);
+    for trash_root in trash_roots {
+        let mut trash_files = trash_root.get_trashed_files()?;
+        files.append(&mut trash_files);
+        files.sort_by(|a, b| match sort {
+            SortType::DeletionDate => {
+                // sort by deletion date, if equal directories first
+                let a_date = a.trashinfo.clone().unwrap().deletion_date;
+                let b_date = b.trashinfo.clone().unwrap().deletion_date;
+                let cmp_date = b_date.cmp(&a_date);
 
-            // cmp_date
-            match cmp_date {
-                Equal => {
-                    if a.files_entry.as_deref().unwrap().is_dir() {
-                        Greater
-                    } else {
-                        Less
+                // cmp_date
+                match cmp_date {
+                    Equal => {
+                        if a.files_entry.as_deref().unwrap().is_dir() {
+                            Greater
+                        } else {
+                            Less
+                        }
                     }
+                    other => other,
                 }
-                other => other,
             }
-        }
-        SortType::TrashRoot => {
-            // compare by origin, if equal, then by deletion date
-            let a_dev = a.trashroot.device.clone().dev_num.dev_id;
-            let b_dev = b.trashroot.device.clone().dev_num.dev_id;
-            let cmp_dev = a_dev.cmp(&b_dev);
-            match cmp_dev {
-                Equal => {
-                    let a_date = a.trashinfo.clone().unwrap().deletion_date;
-                    let b_date = b.trashinfo.clone().unwrap().deletion_date;
-                    b_date.cmp(&a_date)
+            SortType::TrashRoot => {
+                // compare by origin, if equal, then by deletion date
+                let a_dev = a.trashroot.device.clone().dev_num.dev_id;
+                let b_dev = b.trashroot.device.clone().dev_num.dev_id;
+                let cmp_dev = a_dev.cmp(&b_dev);
+                match cmp_dev {
+                    Equal => {
+                        let a_date = a.trashinfo.clone().unwrap().deletion_date;
+                        let b_date = b.trashinfo.clone().unwrap().deletion_date;
+                        b_date.cmp(&a_date)
+                    }
+                    other => other,
                 }
-                other => other,
             }
-        }
-        SortType::Size => {
-            // compare by size, if equal, then by deletion date
-            let a_size = a.get_size().expect("error while getting file size");
-            let b_size = b.get_size().expect("error while getting file size");
-            let cmp_size = b_size.cmp(&a_size);
+            SortType::Size => {
+                // compare by size, if equal, then by deletion date
+                let a_size = a.get_size().expect("error while getting file size");
+                let b_size = b.get_size().expect("error while getting file size");
+                let cmp_size = b_size.cmp(&a_size);
 
-            match cmp_size {
-                Equal => {
-                    let a_date = a.trashinfo.clone().unwrap().deletion_date;
-                    let b_date = b.trashinfo.clone().unwrap().deletion_date;
-                    b_date.cmp(&a_date)
+                match cmp_size {
+                    Equal => {
+                        let a_date = a.trashinfo.clone().unwrap().deletion_date;
+                        let b_date = b.trashinfo.clone().unwrap().deletion_date;
+                        b_date.cmp(&a_date)
+                    }
+                    other => other,
                 }
-                other => other,
             }
-        }
-    });
+        });
+    }
 
     Ok(files)
 }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
+/// copied from ratatui docs
 fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
     let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
