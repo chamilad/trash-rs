@@ -36,6 +36,13 @@ const FOOTER_HEIGHT: u16 = 3;
 // todo - empty trash bin function
 //  1. empty all trash - may error out because of permissions
 //  2. empty home trash - sure fire
+// todo: filter by
+//  - root type
+//  - large files
+//  - last 7 days
+// todo: remove name from description
+// todo: add sort by name, trash drive, type (file, dir, link)
+// todo: find (fuzzy) by name, path, origin
 
 #[derive(Clone, Copy, PartialEq)]
 enum SortType {
@@ -58,6 +65,8 @@ struct App {
     trashed_files: Vec<TrashFile>,
     selected: usize,
     sort_type: SortType,
+    scroll_offset: usize,
+    max_visible_items: usize,
 }
 
 impl App {
@@ -67,10 +76,12 @@ impl App {
             trashed_files: vec![],
             selected: 0,
             sort_type: SortType::DeletionDate,
+            scroll_offset: 0,
+            max_visible_items: 0,
         }
     }
 
-    fn render(&self, f: &mut Frame) {
+    fn render(&mut self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
@@ -113,17 +124,19 @@ impl App {
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
                     .split(chunks[1]);
 
-                let file_list_width = frame_area.width as f32 * 0.6; // 60% of the screen width
+                self.max_visible_items =
+                    (frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT - 2) as usize;
 
                 let mut selected_desc: Text = Text::default();
                 let mut preview: Text = Text::default();
                 let preview_height: i32 =
-                    ((frame_area.height as f32 - TITLE_HEIGHT as f32 - FOOTER_HEIGHT as f32) * 0.6)
-                        .floor() as i32; // 60% of the midsection height
+                    ((frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT) as f32 * 0.6).floor()
+                        as i32; // 60% of the midsection height
 
                 // ================= file list
-                let list_items: Vec<ListItem> = self
-                    .trashed_files
+                let scroll_end =
+                    (self.scroll_offset + self.max_visible_items).min(self.trashed_files.len());
+                let list_items: Vec<ListItem> = self.trashed_files[self.scroll_offset..scroll_end]
                     .iter()
                     .enumerate()
                     .map(|(i, file)| {
@@ -136,11 +149,12 @@ impl App {
                             .unwrap();
 
                         // Calculate padding to fill the remaining space for full line width
+                        let file_list_width = frame_area.width as f32 * 0.6; // 60% of the screen width
                         let padding =
                             (file_list_width as usize).saturating_sub(original_file_name.len());
                         let padded_str = format!("{}{}", original_file_name, " ".repeat(padding));
 
-                        let entry = if i == self.selected {
+                        let entry = if i == self.selected - self.scroll_offset {
                             // generate description
                             let f_size = file.get_size().expect("error while getting file size");
                             let f_size_display = if f_size <= 1000 {
@@ -376,14 +390,15 @@ impl App {
                     })
                     .collect();
 
-                let trash_file_count = list_items.len();
                 let list = List::new(list_items)
                     .block(
                         Block::default().borders(Borders::ALL).title(Span::styled(
                             format!(
-                                "Files in Trash [{}/{}]",
-                                self.selected + 1,
-                                trash_file_count
+                                "Files in Trash [{}/{}] - {}, {}",
+                                self.selected,
+                                self.trashed_files.len(),
+                                self.scroll_offset,
+                                self.max_visible_items,
                             ),
                             Style::default()
                                 .bg(Color::Green)
@@ -753,10 +768,18 @@ impl App {
                     if self.selected > 0 {
                         self.selected -= 1;
                     }
+
+                    if self.selected < self.scroll_offset {
+                        self.scroll_offset = self.selected;
+                    }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if self.selected < self.trashed_files.len() - 1 {
                         self.selected += 1;
+                    }
+
+                    if self.selected >= self.scroll_offset + self.max_visible_items {
+                        self.scroll_offset = self.selected - self.max_visible_items + 1;
                     }
                 }
                 KeyCode::Enter => {
@@ -770,9 +793,11 @@ impl App {
                 }
                 KeyCode::Char('g') | KeyCode::PageUp => {
                     self.selected = 0;
+                    self.scroll_offset = 0;
                 }
                 KeyCode::Char('G') | KeyCode::PageDown => {
                     self.selected = self.trashed_files.len() - 1;
+                    self.scroll_offset = self.selected - self.max_visible_items + 1;
                 }
                 KeyCode::Char('q') => {
                     self.state = AppState::Exiting;
