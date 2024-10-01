@@ -882,7 +882,7 @@ pub struct Device {
     pub dev_num: DeviceNumber,
     dev_name: Option<String>, // only available for external mounts
     mount_root: Option<PathBuf>,
-    pub mount_point: Option<PathBuf>,
+    mount_point: Option<PathBuf>,
 }
 
 impl Device {

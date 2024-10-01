@@ -352,6 +352,7 @@ impl App {
                                 TrashRootType::Home => Span::from("  "),
                                 _ => Span::from("💾"),
                             };
+
                             Line::from(vec![entry_symbol, entry_filetype, entry_text])
                         } else {
                             let (fg_color, entry_filetype) =
@@ -375,10 +376,15 @@ impl App {
                     })
                     .collect();
 
+                let trash_file_count = list_items.len();
                 let list = List::new(list_items)
                     .block(
                         Block::default().borders(Borders::ALL).title(Span::styled(
-                            "Files in Trash",
+                            format!(
+                                "Files in Trash [{}/{}]",
+                                self.selected + 1,
+                                trash_file_count
+                            ),
                             Style::default()
                                 .bg(Color::Green)
                                 .fg(Color::Black)
@@ -846,7 +852,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         match app.state {
             AppState::RefreshFileList => {
-                app.trashed_files = get_trashed_files(&app.sort_type)?;
+                app.trashed_files = get_trashed_files()?;
+                sort_file_list(&mut app.trashed_files, &app.sort_type);
                 app.state = AppState::MainScreen;
             }
             AppState::Exiting => {
@@ -880,7 +887,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn get_trashed_files(sort: &SortType) -> Result<Vec<TrashFile>, Box<dyn Error>> {
+fn get_trashed_files() -> Result<Vec<TrashFile>, Box<dyn Error>> {
     // get user trash directory
     let user_home = get_home_dir().expect("couldn't get user home directory");
     let user_trash_dir = TrashDirectory::resolve_for_file(&user_home, VERBOSE_MODE)
@@ -894,58 +901,61 @@ fn get_trashed_files(sort: &SortType) -> Result<Vec<TrashFile>, Box<dyn Error>> 
     for trash_root in trash_roots {
         let mut trash_files = trash_root.get_trashed_files()?;
         files.append(&mut trash_files);
-        files.sort_by(|a, b| match sort {
-            SortType::DeletionDate => {
-                // sort by deletion date, if equal directories first
-                let a_date = a.trashinfo.clone().unwrap().deletion_date;
-                let b_date = b.trashinfo.clone().unwrap().deletion_date;
-                let cmp_date = b_date.cmp(&a_date);
-
-                // cmp_date
-                match cmp_date {
-                    Equal => {
-                        if a.files_entry.as_deref().unwrap().is_dir() {
-                            Greater
-                        } else {
-                            Less
-                        }
-                    }
-                    other => other,
-                }
-            }
-            SortType::TrashRoot => {
-                // compare by origin, if equal, then by deletion date
-                let a_dev = a.trashroot.device.clone().dev_num.dev_id;
-                let b_dev = b.trashroot.device.clone().dev_num.dev_id;
-                let cmp_dev = a_dev.cmp(&b_dev);
-                match cmp_dev {
-                    Equal => {
-                        let a_date = a.trashinfo.clone().unwrap().deletion_date;
-                        let b_date = b.trashinfo.clone().unwrap().deletion_date;
-                        b_date.cmp(&a_date)
-                    }
-                    other => other,
-                }
-            }
-            SortType::Size => {
-                // compare by size, if equal, then by deletion date
-                let a_size = a.get_size().expect("error while getting file size");
-                let b_size = b.get_size().expect("error while getting file size");
-                let cmp_size = b_size.cmp(&a_size);
-
-                match cmp_size {
-                    Equal => {
-                        let a_date = a.trashinfo.clone().unwrap().deletion_date;
-                        let b_date = b.trashinfo.clone().unwrap().deletion_date;
-                        b_date.cmp(&a_date)
-                    }
-                    other => other,
-                }
-            }
-        });
     }
 
     Ok(files)
+}
+
+fn sort_file_list(list: &mut Vec<TrashFile>, sort_by: &SortType) {
+    list.sort_by(|a, b| match sort_by {
+        SortType::DeletionDate => {
+            // sort by deletion date, if equal directories first
+            let a_date = a.trashinfo.clone().unwrap().deletion_date;
+            let b_date = b.trashinfo.clone().unwrap().deletion_date;
+            let cmp_date = b_date.cmp(&a_date);
+
+            // cmp_date
+            match cmp_date {
+                Equal => {
+                    if a.files_entry.as_deref().unwrap().is_dir() {
+                        Greater
+                    } else {
+                        Less
+                    }
+                }
+                other => other,
+            }
+        }
+        SortType::TrashRoot => {
+            // compare by origin, if equal, then by deletion date
+            let a_dev = a.trashroot.device.clone().dev_num.dev_id;
+            let b_dev = b.trashroot.device.clone().dev_num.dev_id;
+            let cmp_dev = a_dev.cmp(&b_dev);
+            match cmp_dev {
+                Equal => {
+                    let a_date = a.trashinfo.clone().unwrap().deletion_date;
+                    let b_date = b.trashinfo.clone().unwrap().deletion_date;
+                    b_date.cmp(&a_date)
+                }
+                other => other,
+            }
+        }
+        SortType::Size => {
+            // compare by size, if equal, then by deletion date
+            let a_size = a.get_size().expect("error while getting file size");
+            let b_size = b.get_size().expect("error while getting file size");
+            let cmp_size = b_size.cmp(&a_size);
+
+            match cmp_size {
+                Equal => {
+                    let a_date = a.trashinfo.clone().unwrap().deletion_date;
+                    let b_date = b.trashinfo.clone().unwrap().deletion_date;
+                    b_date.cmp(&a_date)
+                }
+                other => other,
+            }
+        }
+    });
 }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
