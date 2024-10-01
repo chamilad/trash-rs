@@ -33,6 +33,9 @@ const UNSELECTED_FG_COLOR_LINK: Color = Color::Magenta;
 const TITLE_HEIGHT: u16 = 3;
 const FOOTER_HEIGHT: u16 = 3;
 
+// how many items on each side before scrolling starts
+const FILELIST_SCROLL_VIEW_OFFSET: usize = 3;
+
 // todo - empty trash bin function
 //  1. empty all trash - may error out because of permissions
 //  2. empty home trash - sure fire
@@ -395,7 +398,7 @@ impl App {
                         Block::default().borders(Borders::ALL).title(Span::styled(
                             format!(
                                 "Files in Trash [{}/{}] - {}, {}",
-                                self.selected,
+                                self.selected + 1,
                                 self.trashed_files.len(),
                                 self.scroll_offset,
                                 self.max_visible_items,
@@ -769,8 +772,12 @@ impl App {
                         self.selected -= 1;
                     }
 
-                    if self.selected < self.scroll_offset {
-                        self.scroll_offset = self.selected;
+                    // if selected item is close to a position to start scrolling up
+                    // unless it's close to the top
+                    if self.selected >= FILELIST_SCROLL_VIEW_OFFSET
+                        && self.selected - FILELIST_SCROLL_VIEW_OFFSET < self.scroll_offset
+                    {
+                        self.scroll_offset = self.selected - FILELIST_SCROLL_VIEW_OFFSET;
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -778,8 +785,15 @@ impl App {
                         self.selected += 1;
                     }
 
-                    if self.selected >= self.scroll_offset + self.max_visible_items {
-                        self.scroll_offset = self.selected - self.max_visible_items + 1;
+                    // if the selected item is close to a position to start scrolling down
+                    // unless it results in overscrolling
+                    if self.selected + FILELIST_SCROLL_VIEW_OFFSET < self.trashed_files.len()
+                        && self.selected + FILELIST_SCROLL_VIEW_OFFSET
+                            >= self.scroll_offset + self.max_visible_items
+                    {
+                        self.scroll_offset = self.selected + FILELIST_SCROLL_VIEW_OFFSET
+                            - self.max_visible_items
+                            + 1;
                     }
                 }
                 KeyCode::Enter => {
