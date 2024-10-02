@@ -12,7 +12,10 @@ use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use ratatui::layout::{Alignment, Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 use ratatui::{restore, Frame, Terminal};
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::fs::{self, File};
@@ -52,6 +55,8 @@ enum SortType {
     DeletionDate,
     TrashRoot,
     Size,
+    FileName,
+    // FileType,
 }
 
 #[derive(PartialEq)]
@@ -127,18 +132,29 @@ impl App {
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
                     .split(chunks[1]);
 
-                self.max_visible_items =
+                // file list area details
+                // 60% of the screen width
+                let file_list_width = (frame_area.width as f32 * 0.6).ceil() as usize;
+                // -2 for left and right border
+                let file_list_inner_width = file_list_width - 2;
+                // -2 for the border on top and bottom
+                let file_list_height =
                     (frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT - 2) as usize;
+                self.max_visible_items = file_list_height;
+                // +1 for the left border
+                let file_list_inner_x = 1;
+                // +1 for the top border
+                let file_list_inner_y = TITLE_HEIGHT + 1;
 
                 let mut selected_desc: Text = Text::default();
                 let mut preview: Text = Text::default();
                 let preview_height: i32 =
                     ((frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT) as f32 * 0.6).floor()
                         as i32; // 60% of the midsection height
-
-                // ================= file list
                 let scroll_end =
                     (self.scroll_offset + self.max_visible_items).min(self.trashed_files.len());
+
+                // ================= file list
                 let list_items: Vec<ListItem> = self.trashed_files[self.scroll_offset..scroll_end]
                     .iter()
                     .enumerate()
@@ -151,13 +167,15 @@ impl App {
                             .into_string()
                             .unwrap();
 
-                        // Calculate padding to fill the remaining space for full line width
-                        let file_list_width = frame_area.width as f32 * 0.6; // 60% of the screen width
-                        let padding =
+                        // selection highlight padding
+                        let selection_padding =
                             (file_list_width as usize).saturating_sub(original_file_name.len());
-                        let padded_str = format!("{}{}", original_file_name, " ".repeat(padding));
+                        let padded_str =
+                            format!("{}{}", original_file_name, " ".repeat(selection_padding));
 
-                        let entry = if i == self.selected - self.scroll_offset {
+                        // checking if current item is the selected needs to
+                        // include the scroll offset
+                        let entry = if i == (self.selected - self.scroll_offset) {
                             // generate description
                             let f_size = file.get_size().expect("error while getting file size");
                             let f_size_display = if f_size <= 1000 {
@@ -168,6 +186,8 @@ impl App {
                                 format!("{}MB", f_size / 1000000)
                             };
 
+                            // absolute paths are available only for the
+                            // trashed files in the user's home
                             let original_path = match file.trashroot.root_type {
                                 TrashRootType::Home => file.original_file.display().to_string(),
                                 _ => format!(
@@ -188,19 +208,19 @@ impl App {
                             };
 
                             selected_desc = Text::from(vec![
+                                // Line::from(vec![
+                                //     Span::styled(
+                                //         "Name: ",
+                                //         Style::default().add_modifier(Modifier::BOLD),
+                                //     ),
+                                //     Span::styled(
+                                //         original_file_name,
+                                //         Style::default().fg(Color::Gray),
+                                //     ),
+                                // ]),
                                 Line::from(vec![
                                     Span::styled(
-                                        "Name: ",
-                                        Style::default().add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(
-                                        original_file_name,
-                                        Style::default().fg(Color::Gray),
-                                    ),
-                                ]),
-                                Line::from(vec![
-                                    Span::styled(
-                                        "Type: ",
+                                        "File Type: ",
                                         Style::default().add_modifier(Modifier::BOLD),
                                     ),
                                     Span::styled(f_type, Style::default().fg(Color::Gray)),
@@ -224,7 +244,7 @@ impl App {
                                 ]),
                                 Line::from(vec![
                                     Span::styled(
-                                        "Size: ",
+                                        "File Size: ",
                                         Style::default().add_modifier(Modifier::BOLD),
                                     ),
                                     Span::styled(f_size_display, Style::default().fg(Color::Gray)),
@@ -393,15 +413,14 @@ impl App {
                     })
                     .collect();
 
+                let total_item_count = self.trashed_files.len();
                 let list = List::new(list_items)
                     .block(
                         Block::default().borders(Borders::ALL).title(Span::styled(
                             format!(
-                                "Files in Trash [{}/{}] - {}, {}",
+                                "Files in Trash [{}/{}]",
                                 self.selected + 1,
-                                self.trashed_files.len(),
-                                self.scroll_offset,
-                                self.max_visible_items,
+                                total_item_count,
                             ),
                             Style::default()
                                 .bg(Color::Green)
@@ -411,7 +430,7 @@ impl App {
                     )
                     .highlight_style(Style::default().fg(Color::Yellow));
 
-                // ============= description
+                // ============= right column
                 let desc_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
@@ -452,6 +471,8 @@ impl App {
                     SortType::DeletionDate => "[Deleted On]",
                     SortType::TrashRoot => "[Origin]",
                     SortType::Size => "[Size]",
+                    SortType::FileName => "[File Name]",
+                    // SortType::FileType => "[File Type]",
                 };
                 directions = Line::from(vec![
                     Span::styled(
@@ -531,6 +552,21 @@ impl App {
                 f.render_widget(list, midsection_chunks[0]);
                 f.render_widget(desc_text, desc_chunks[0]);
                 f.render_widget(preview_text, desc_chunks[1]);
+
+                // scroll bar for the list
+                let scrollbar = if total_item_count <= self.max_visible_items {
+                    // Scrollbar::new(ScrollbarOrientation::VerticalRight).track_symbol(Some("░"));
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                        .thumb_symbol("░")
+                        .track_symbol(Some("░"))
+                } else {
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                        .thumb_symbol("█")
+                        .track_symbol(Some("░"))
+                };
+                let mut scrollbar_state =
+                    ScrollbarState::new(total_item_count).position(self.selected);
+                f.render_stateful_widget(scrollbar, midsection_chunks[0], &mut scrollbar_state);
             }
 
             AppState::RestoreConfirmation(choice) => {
@@ -708,6 +744,54 @@ impl App {
 
                 choices.push(Line::from(vec![s_check_mark, s_label]));
 
+                // file name
+                let fn_check_mark = if self.sort_type == SortType::FileName {
+                    Span::styled(
+                        "[x]",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Black)
+                            .fg(Color::White),
+                    )
+                } else {
+                    Span::styled("[ ]", Style::default())
+                };
+
+                let fn_label = if *choice == SortType::FileName {
+                    Span::styled(
+                        " File Name ",
+                        Style::default().bg(Color::Black).fg(Color::White),
+                    )
+                } else {
+                    Span::styled(" File Name ", Style::default())
+                };
+
+                choices.push(Line::from(vec![fn_check_mark, fn_label]));
+
+                // // file type
+                // let ft_check_mark = if self.sort_type == SortType::FileType {
+                //     Span::styled(
+                //         "[x]",
+                //         Style::default()
+                //             .add_modifier(Modifier::BOLD)
+                //             .bg(Color::Black)
+                //             .fg(Color::White),
+                //     )
+                // } else {
+                //     Span::styled("[ ]", Style::default())
+                // };
+
+                // let ft_label = if *choice == SortType::FileType {
+                //     Span::styled(
+                //         " File Type ",
+                //         Style::default().bg(Color::Black).fg(Color::White),
+                //     )
+                // } else {
+                //     Span::styled(" File Type ", Style::default())
+                // };
+
+                // choices.push(Line::from(vec![ft_check_mark, ft_label]));
+
                 // popup dialog
                 let mut dialog_content = vec![question, Line::from(vec![])];
                 dialog_content.append(&mut choices);
@@ -716,7 +800,7 @@ impl App {
                 let block = Block::bordered()
                     .title("Sort files by")
                     .style(Style::default().bg(Color::Gray).fg(Color::Black));
-                let area = popup_area(area, 30, 10);
+                let area = popup_area(area, 30, 15);
                 let dialog = Paragraph::new(dialog_content)
                     .wrap(Wrap { trim: false })
                     .alignment(Alignment::Center)
@@ -791,6 +875,7 @@ impl App {
                         && self.selected + FILELIST_SCROLL_VIEW_OFFSET
                             >= self.scroll_offset + self.max_visible_items
                     {
+                        // since scroll_offset is usize, need to offset first before substracting
                         self.scroll_offset = self.selected + FILELIST_SCROLL_VIEW_OFFSET
                             - self.max_visible_items
                             + 1;
@@ -850,7 +935,9 @@ impl App {
                     let next_choice = match choice {
                         SortType::DeletionDate => SortType::TrashRoot,
                         SortType::TrashRoot => SortType::Size,
-                        SortType::Size => SortType::Size,
+                        SortType::Size => SortType::FileName,
+                        SortType::FileName => SortType::FileName,
+                        // SortType::FileType => SortType::FileType,
                     };
                     self.state = AppState::SortListDialog(next_choice);
                 }
@@ -859,6 +946,8 @@ impl App {
                         SortType::DeletionDate => SortType::DeletionDate,
                         SortType::TrashRoot => SortType::DeletionDate,
                         SortType::Size => SortType::TrashRoot,
+                        SortType::FileName => SortType::Size,
+                        // SortType::FileType => SortType::FileName,
                     };
                     self.state = AppState::SortListDialog(prev_choice);
                 }
@@ -994,6 +1083,37 @@ fn sort_file_list(list: &mut Vec<TrashFile>, sort_by: &SortType) {
                 other => other,
             }
         }
+        SortType::FileName => {
+            let a_name = a.original_file.clone();
+            let b_name = b.original_file.clone();
+            a_name
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_lowercase()
+                .cmp(&b_name.file_name().unwrap().to_str().unwrap().to_lowercase())
+        } // SortType::FileType => {
+          //     let a_meta = a.original_file.metadata().unwrap();
+          //     let a_type = if a_meta.is_symlink() {
+          //         1
+          //     } else if a_meta.is_dir() {
+          //         3
+          //     } else {
+          //         2
+          //     };
+
+          //     let b_meta = b.original_file.metadata().unwrap();
+          //     let b_type = if b_meta.is_symlink() {
+          //         1
+          //     } else if b_meta.is_dir() {
+          //         3
+          //     } else {
+          //         2
+          //     };
+
+          //     a_type.cmp(&b_type)
+          // }
     });
 }
 
