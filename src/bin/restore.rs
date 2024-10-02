@@ -47,8 +47,9 @@ const FILELIST_SCROLL_VIEW_OFFSET: usize = 3;
 //  - large files
 //  - last 7 days
 // todo: remove name from description
-// todo: add sort by name, trash drive, type (file, dir, link)
 // todo: find (fuzzy) by name, path, origin
+// todo: open file with default viewer
+// todo: show a message of confirmation/failure
 
 #[derive(Clone, Copy, PartialEq)]
 enum SortType {
@@ -64,6 +65,7 @@ enum AppState {
     RefreshFileList,
     MainScreen,
     RestoreConfirmation(usize),
+    DeletionConfirmation(usize),
     SortListDialog(SortType),
     Exiting,
 }
@@ -136,15 +138,15 @@ impl App {
                 // 60% of the screen width
                 let file_list_width = (frame_area.width as f32 * 0.6).ceil() as usize;
                 // -2 for left and right border
-                let file_list_inner_width = file_list_width - 2;
+                // let file_list_inner_width = file_list_width - 2;
                 // -2 for the border on top and bottom
                 let file_list_height =
                     (frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT - 2) as usize;
                 self.max_visible_items = file_list_height;
                 // +1 for the left border
-                let file_list_inner_x = 1;
+                // let file_list_inner_x = 1;
                 // +1 for the top border
-                let file_list_inner_y = TITLE_HEIGHT + 1;
+                // let file_list_inner_y = TITLE_HEIGHT + 1;
 
                 let mut selected_desc: Text = Text::default();
                 let mut preview: Text = Text::default();
@@ -208,16 +210,6 @@ impl App {
                             };
 
                             selected_desc = Text::from(vec![
-                                // Line::from(vec![
-                                //     Span::styled(
-                                //         "Name: ",
-                                //         Style::default().add_modifier(Modifier::BOLD),
-                                //     ),
-                                //     Span::styled(
-                                //         original_file_name,
-                                //         Style::default().fg(Color::Gray),
-                                //     ),
-                                // ]),
                                 Line::from(vec![
                                     Span::styled(
                                         "File Type: ",
@@ -573,7 +565,7 @@ impl App {
                 // question in some mixed style
                 let selected_file = &self.trashed_files[self.selected];
                 let question = Line::from(vec![
-                    Span::styled("This will restore file ", Style::default()),
+                    Span::styled("This will restore ", Style::default()),
                     Span::styled(
                         format!(
                             "'{}' ",
@@ -627,7 +619,7 @@ impl App {
                 // popup dialog
                 let area = f.area();
                 let block = Block::bordered()
-                    .title("Confirm Action")
+                    .title("Confirm Restoration")
                     .style(Style::default().bg(Color::Gray).fg(Color::Black));
                 let area = popup_area(area, 40, 15);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
@@ -665,6 +657,96 @@ impl App {
                 ]);
             }
 
+            AppState::DeletionConfirmation(choice) => {
+                // question in some mixed style
+                let selected_file = &self.trashed_files[self.selected];
+                let question = Line::from(vec![
+                    Span::styled("This will permanently delete ", Style::default()),
+                    Span::styled(
+                        format!(
+                            "'{}' ",
+                            selected_file
+                                .original_file
+                                .file_name()
+                                .unwrap()
+                                .to_str()
+                                .unwrap(),
+                        ),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" forever?", Style::default()),
+                ]);
+
+                // space between buttons
+                let spacer = Span::styled("      ", Style::default());
+
+                // illusion of buttons
+                let buttons = if *choice == 0 {
+                    Line::from(vec![
+                        Span::styled(
+                            "[Confirm]",
+                            Style::default()
+                                .add_modifier(Modifier::BOLD)
+                                .bg(Color::Black)
+                                .fg(Color::White),
+                        ),
+                        spacer,
+                        Span::styled("[Cancel]", Style::default()),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled("[Confirm]", Style::default()),
+                        spacer,
+                        Span::styled(
+                            "[Cancel]",
+                            Style::default()
+                                .add_modifier(Modifier::BOLD)
+                                .bg(Color::Black)
+                                .fg(Color::White),
+                        ),
+                    ])
+                };
+
+                // popup dialog
+                let area = f.area();
+                let block = Block::bordered()
+                    .title("Confirm Deletion")
+                    .style(Style::default().bg(Color::Gray).fg(Color::Black));
+                let area = popup_area(area, 40, 15);
+                let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
+                    .wrap(Wrap { trim: false })
+                    .alignment(Alignment::Center)
+                    .block(block);
+                f.render_widget(Clear, area); //this clears out the background
+                f.render_widget(dialog, area);
+
+                directions = Line::from(vec![
+                    Span::styled(
+                        "left/right h/l",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Green)
+                            .fg(Color::Black),
+                    ),
+                    Span::styled(" select, ", Style::default()),
+                    Span::styled(
+                        "enter",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Green)
+                            .fg(Color::Black),
+                    ),
+                    Span::styled(" confirm selection, ", Style::default()),
+                    Span::styled(
+                        "q/esc",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Green)
+                            .fg(Color::Black),
+                    ),
+                    Span::styled(" cancel, ", Style::default()),
+                ]);
+            }
             AppState::SortListDialog(choice) => {
                 let question = Line::from(vec![Span::styled(
                     "Select sort by column",
@@ -768,30 +850,6 @@ impl App {
 
                 choices.push(Line::from(vec![fn_check_mark, fn_label]));
 
-                // // file type
-                // let ft_check_mark = if self.sort_type == SortType::FileType {
-                //     Span::styled(
-                //         "[x]",
-                //         Style::default()
-                //             .add_modifier(Modifier::BOLD)
-                //             .bg(Color::Black)
-                //             .fg(Color::White),
-                //     )
-                // } else {
-                //     Span::styled("[ ]", Style::default())
-                // };
-
-                // let ft_label = if *choice == SortType::FileType {
-                //     Span::styled(
-                //         " File Type ",
-                //         Style::default().bg(Color::Black).fg(Color::White),
-                //     )
-                // } else {
-                //     Span::styled(" File Type ", Style::default())
-                // };
-
-                // choices.push(Line::from(vec![ft_check_mark, ft_label]));
-
                 // popup dialog
                 let mut dialog_content = vec![question, Line::from(vec![])];
                 dialog_content.append(&mut choices);
@@ -884,6 +942,9 @@ impl App {
                 KeyCode::Enter => {
                     self.state = AppState::RestoreConfirmation(0);
                 }
+                KeyCode::Delete => {
+                    self.state = AppState::DeletionConfirmation(0);
+                }
                 KeyCode::Char('r') | KeyCode::F(5) => {
                     self.state = AppState::RefreshFileList;
                 }
@@ -917,6 +978,34 @@ impl App {
                         if choice == 0 {
                             let selected_file = &self.trashed_files[self.selected];
                             let _ = selected_file.restore().expect("could not restore file");
+                        }
+
+                        // Refresh and return to file list after action or cancel
+                        self.state = AppState::RefreshFileList;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        // Close the dialog without performing any action
+                        self.state = AppState::RefreshFileList;
+                    }
+                    _ => {}
+                }
+            }
+
+            AppState::DeletionConfirmation(choice) => {
+                match key {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('h') => {
+                        // Toggle between Yes (0) and No (1)
+                        if let AppState::DeletionConfirmation(choice) = &mut self.state {
+                            *choice = if *choice == 0 { 1 } else { 0 };
+                        }
+                    }
+                    KeyCode::Enter => {
+                        // Confirm the action if Yes is selected
+                        if choice == 0 {
+                            let selected_file = &self.trashed_files[self.selected];
+                            let _ = selected_file
+                                .delete_forever()
+                                .expect("could not delete file");
                         }
 
                         // Refresh and return to file list after action or cancel
@@ -1093,27 +1182,7 @@ fn sort_file_list(list: &mut Vec<TrashFile>, sort_by: &SortType) {
                 .unwrap()
                 .to_lowercase()
                 .cmp(&b_name.file_name().unwrap().to_str().unwrap().to_lowercase())
-        } // SortType::FileType => {
-          //     let a_meta = a.original_file.metadata().unwrap();
-          //     let a_type = if a_meta.is_symlink() {
-          //         1
-          //     } else if a_meta.is_dir() {
-          //         3
-          //     } else {
-          //         2
-          //     };
-
-          //     let b_meta = b.original_file.metadata().unwrap();
-          //     let b_type = if b_meta.is_symlink() {
-          //         1
-          //     } else if b_meta.is_dir() {
-          //         3
-          //     } else {
-          //         2
-          //     };
-
-          //     a_type.cmp(&b_type)
-          // }
+        }
     });
 }
 

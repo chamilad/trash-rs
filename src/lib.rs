@@ -3,7 +3,9 @@ use rand::Rng;
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
-use std::fs::{create_dir, read_dir, read_to_string, rename, File, OpenOptions};
+use std::fs::{
+    create_dir, read_dir, read_to_string, remove_dir_all, remove_file, rename, File, OpenOptions,
+};
 use std::io::Write;
 use std::os::linux::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -192,7 +194,7 @@ impl TrashDirectory {
         ));
     }
 
-    pub fn update_dir_sizes_entry(&self, trash_file: &TrashFile) -> Result<(), Box<dyn Error>> {
+    pub fn add_dirsizes_entry(&self, trash_file: &TrashFile) -> Result<(), Box<dyn Error>> {
         if trash_file.files_entry.is_none() {
             return Err(Box::<dyn Error>::from(
                 "attempt to update directorysizes for incomplete trash operation",
@@ -318,6 +320,80 @@ impl TrashDirectory {
         Ok(())
     }
 
+    // todo: duplicate logic from the above, maybe an optional trashfile arg
+    pub fn cleanup_dirsizes(&self) -> Result<(), Box<dyn Error>> {
+        let current_dir_sizes = self.home.join("directorysizes");
+        // this will skip updating dirsizes in topdir trash created by admin
+        // (scenario 1). It's easier to keep this behavior consistent than being
+        // dependent on dir permissions that the user will or will not know about
+        if !can_delete_file(&current_dir_sizes) {
+            return Err(Box::<dyn Error>::from(
+                "not enough permissions to edit directorysizes",
+            ));
+        }
+
+        if current_dir_sizes.exists() && !current_dir_sizes.is_file() {
+            let p = current_dir_sizes.to_str().unwrap();
+            return Err(Box::<dyn Error>::from(format!(
+                "{p} is not a file, not updating directorysizes"
+            )));
+        }
+
+        let mut rng = rand::thread_rng();
+        let random_nu = rng.gen_range(100000000..999999999);
+
+        // below rename will not work across different mount points
+        // so the temp file has to be made on the same parition
+        let temp_dir = if self.root_type == TrashRootType::Home {
+            env::temp_dir()
+        } else {
+            self.home.clone()
+        };
+
+        let binary_name = env!("CARGO_PKG_NAME");
+        let tool_temp_dir = temp_dir.join(binary_name);
+        must_have_dir(&tool_temp_dir)?;
+
+        let target_file_path = tool_temp_dir.join(format!("directorysizes-{random_nu}"));
+
+        // cleanup existing entries if other implementations do not support this
+        // part of the spec. If this isn't done, directorysizes keeps on growing
+        let existing_content = if current_dir_sizes.exists() {
+            let mut existing_content: String = String::new();
+            let existing_dir_sizes = read_to_string(&current_dir_sizes.to_str().unwrap())?;
+            let entries: Vec<&str> = existing_dir_sizes.lines().collect();
+            for entry in entries {
+                let fields: Vec<&str> = entry.split_whitespace().collect();
+                if fields.len() == 3 {
+                    let f = match decode(fields[2]) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    let f_path = self.files.join(f.into_owned());
+                    if f_path.exists() {
+                        existing_content += &format!("{entry}\n").to_string();
+                    }
+                }
+            }
+
+            existing_content
+        } else {
+            String::new()
+        };
+
+        // update with the latest entry
+        let mut f = File::create(&target_file_path)?;
+        if let Err(e) = f.write_all(existing_content.as_bytes()) {
+            return Err(Box::<dyn Error>::from(format!(
+                "couldn't update directorysizes: {e}"
+            )));
+        }
+
+        // atomically move the file back
+        rename(&target_file_path, &current_dir_sizes)?;
+        Ok(())
+    }
     pub fn get_trashed_files(&self) -> Result<Vec<TrashFile>, Box<dyn Error>> {
         let files_dir = self.files.clone();
         let mut files: Vec<TrashFile> = vec![];
@@ -687,8 +763,41 @@ impl TrashFile {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
 
+        let is_dir = !self.files_entry.as_ref().unwrap().is_symlink()
+            && self.files_entry.as_ref().unwrap().is_dir();
         rename(&self.files_entry.as_ref().unwrap(), &self.original_file)?;
+        remove_file(&self.trashinfo.as_ref().unwrap().path)?;
+
+        // if dir, remvoe from dir sizes
+        if is_dir {
+            self.trashroot.cleanup_dirsizes()?;
+        }
+
         Ok(&self.original_file)
+    }
+
+    pub fn delete_forever(&self) -> Result<(), Box<dyn Error>> {
+        if self.files_entry == None || self.trashinfo == None {
+            return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
+        }
+
+        let is_dir = !self.files_entry.as_ref().unwrap().is_symlink()
+            && self.files_entry.as_ref().unwrap().is_dir();
+
+        if is_dir {
+            remove_dir_all(&self.files_entry.as_ref().unwrap())?;
+        } else {
+            remove_file(&self.files_entry.as_ref().unwrap())?;
+        }
+
+        remove_file(&self.trashinfo.as_ref().unwrap().path)?;
+
+        // if dir, remvoe from dir sizes
+        if is_dir {
+            self.trashroot.cleanup_dirsizes()?;
+        }
+
+        Ok(())
     }
 
     // size in bytes (not the size on disk)
