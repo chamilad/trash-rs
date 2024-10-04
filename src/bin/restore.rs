@@ -1,7 +1,8 @@
 use std::error::Error;
 use std::fs::read_dir;
 
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::KeyModifiers;
+use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use libtrash::*;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::DisableMouseCapture;
@@ -21,6 +22,7 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::MAIN_SEPARATOR_STR;
+use std::str::from_utf8;
 
 const VERBOSE_MODE: bool = false;
 
@@ -46,10 +48,11 @@ const FILELIST_SCROLL_VIEW_OFFSET: usize = 3;
 //  - root type
 //  - large files
 //  - last 7 days
-// todo: remove name from description
 // todo: find (fuzzy) by name, path, origin
 // todo: open file with default viewer
 // todo: show a message of confirmation/failure
+// todo: show help on f1 with shortcuts
+// todo: message if trash bin is empty
 
 #[derive(Clone, Copy, PartialEq)]
 enum SortType {
@@ -66,6 +69,7 @@ enum AppState {
     MainScreen,
     RestoreConfirmation(usize),
     DeletionConfirmation(usize),
+    EmptyBinConfirmation(usize),
     SortListDialog(SortType),
     Exiting,
 }
@@ -252,17 +256,19 @@ impl App {
                                         Text::from(vec![Line::from(vec![
                                             Span::styled(
                                                 "Original target: ",
-                                                Style::default().add_modifier(Modifier::BOLD),
+                                                Style::default()
+                                                    .add_modifier(Modifier::BOLD)
+                                                    .fg(Color::DarkGray),
                                             ),
                                             Span::styled(
                                                 target_path_str,
-                                                Style::default().fg(Color::Gray),
+                                                Style::default().fg(Color::White),
                                             ),
                                         ])])
                                     }
                                     Err(_e) => Text::styled(
                                         "couldn't read link",
-                                        Style::default().fg(Color::Gray),
+                                        Style::default().fg(Color::LightRed),
                                     ),
                                 }
                             } else if file.files_entry.as_ref().unwrap().is_dir() {
@@ -274,19 +280,26 @@ impl App {
                                     .collect::<Result<Vec<_>, io::Error>>()
                                     .unwrap();
 
-                                if entries.len() == 0 {
+                                let item_count = entries.len();
+                                if item_count == 0 {
                                     lines.push(Line::from(vec![Span::styled(
                                         "empty directory",
-                                        Style::default().fg(Color::Gray),
+                                        Style::default().fg(Color::DarkGray),
                                     )]));
                                 } else {
+                                    lines.push(Line::from("."));
                                     for (i, entry) in entries.into_iter().enumerate() {
                                         if i > preview_height as usize {
                                             break;
                                         }
 
-                                        let line = if entry.is_symlink() {
-                                            Line::from(vec![Span::styled(
+                                        let indicator = if i + 1 < item_count {
+                                            Span::styled("├── ", Style::default())
+                                        } else {
+                                            Span::styled("└── ", Style::default())
+                                        };
+                                        let item = if entry.is_symlink() {
+                                            Span::styled(
                                                 entry
                                                     .file_name()
                                                     .unwrap()
@@ -294,9 +307,9 @@ impl App {
                                                     .into_string()
                                                     .unwrap(),
                                                 Style::default().fg(UNSELECTED_FG_COLOR_LINK),
-                                            )])
+                                            )
                                         } else if entry.is_dir() {
-                                            Line::from(vec![Span::styled(
+                                            Span::styled(
                                                 entry
                                                     .file_name()
                                                     .unwrap()
@@ -304,9 +317,9 @@ impl App {
                                                     .into_string()
                                                     .unwrap(),
                                                 Style::default().fg(UNSELECTED_FG_COLOR_DIR),
-                                            )])
+                                            )
                                         } else {
-                                            Line::from(vec![Span::styled(
+                                            Span::styled(
                                                 entry
                                                     .file_name()
                                                     .unwrap()
@@ -314,49 +327,99 @@ impl App {
                                                     .into_string()
                                                     .unwrap(),
                                                 Style::default().fg(UNSELECTED_FG_COLOR_FILE),
-                                            )])
+                                            )
                                         };
-                                        lines.push(line);
+                                        lines.push(Line::from(vec![indicator, item]));
                                     }
                                 }
                                 Text::from(lines)
                             } else if file.files_entry.as_ref().unwrap().is_file() {
-                                // check if file is a text readable
-                                let mut prev_file =
-                                    File::open(file.files_entry.as_ref().unwrap().clone()).unwrap();
-                                let mut prev_buffer = [0; 1024];
-                                let bytes_read = prev_file.read(&mut prev_buffer[..]).unwrap();
-
-                                if std::str::from_utf8(&prev_buffer[..bytes_read]).is_err() {
-                                    Text::styled("binary file", Style::default().fg(Color::Gray))
+                                if file.get_size().ok().unwrap() == 0 {
+                                    Text::styled(
+                                        "empty file".to_string(),
+                                        Style::default().fg(Color::DarkGray),
+                                    )
                                 } else {
-                                    let prev_reader = BufReader::new(prev_file);
-                                    let prev_content = if prev_reader.lines().count() == 0 {
-                                        // todo: bug: .desktop file is marked as empty
-                                        "empty file".to_string()
-                                    } else {
-                                        let prev_file =
-                                            File::open(file.files_entry.as_ref().unwrap().clone())
-                                                .unwrap();
-                                        let prev_reader = BufReader::new(prev_file);
-                                        let mut content_buff = "".to_string();
-                                        for line in
-                                            prev_reader.lines().take(preview_height as usize)
-                                        {
-                                            match line {
-                                                Ok(v) => {
-                                                    content_buff = format!("{content_buff}{v}\n")
-                                                }
-                                                Err(_) => {}
-                                            }
-                                        }
-                                        content_buff
+                                    // check if file is a text readable
+                                    let prev_file =
+                                        File::open(file.files_entry.as_ref().unwrap().clone())
+                                            .unwrap();
+                                    let mut text_checker_reader = BufReader::new(&prev_file);
+                                    let mut text_checker_line = vec![];
+                                    let bytes_read = match text_checker_reader
+                                        .read_until(b'\n', &mut text_checker_line)
+                                    {
+                                        Ok(v) => v,
+                                        Err(_) => 0,
                                     };
 
-                                    Text::styled(prev_content, Style::default().fg(Color::Gray))
+                                    if bytes_read == 0 {
+                                        Text::styled(
+                                            "binary file",
+                                            Style::default().fg(Color::DarkGray),
+                                        )
+                                    } else {
+                                        let test_line_read =
+                                            from_utf8(&text_checker_line[..bytes_read]);
+                                        if test_line_read.is_err() || test_line_read.ok().is_none()
+                                        {
+                                            Text::styled(
+                                                "binary file",
+                                                Style::default().fg(Color::DarkGray),
+                                            )
+                                        } else {
+                                            // read at most 15 lines
+                                            let prev_file = File::open(
+                                                file.files_entry.as_ref().unwrap().clone(),
+                                            )
+                                            .unwrap();
+                                            let mut prev_reader = BufReader::new(prev_file);
+                                            let mut bytes_total: usize = 0;
+                                            let mut line_buff: Vec<u8> = vec![];
+                                            let mut eof_reached = false;
+                                            for _ in 1..preview_height.min(15) {
+                                                let bytes_read = match prev_reader
+                                                    .read_until(b'\n', &mut line_buff)
+                                                {
+                                                    Ok(v) => v,
+                                                    Err(_) => 0,
+                                                };
+
+                                                // EOF
+                                                if bytes_read == 0 {
+                                                    eof_reached = true;
+                                                    break;
+                                                }
+
+                                                bytes_total += bytes_read;
+                                            }
+
+                                            // some files could be non-text even
+                                            // though the first line is textual
+                                            match from_utf8(&line_buff[..bytes_total]) {
+                                                Ok(v) => {
+                                                    let mut content = v.to_owned();
+                                                    if !eof_reached {
+                                                        content.push_str("\n...");
+                                                    }
+                                                    Text::styled(
+                                                        content,
+                                                        Style::default().fg(Color::Gray),
+                                                    )
+                                                }
+                                                Err(_) => Text::styled(
+                                                    "binary file",
+                                                    Style::default().fg(Color::DarkGray),
+                                                ),
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
-                                Text::styled("unknown file type", Style::default().fg(Color::Gray))
+                                Text::styled(
+                                    "unknown file type",
+                                    Style::default().fg(Color::DarkGray),
+                                )
                             };
 
                             // generate list item entry
@@ -379,7 +442,8 @@ impl App {
 
                             let entry_symbol = match file.trashroot.root_type {
                                 TrashRootType::Home => Span::from("  "),
-                                _ => Span::from("💾"),
+                                // _ => Span::from("💾"),
+                                _ => Span::from("🢅 "),
                             };
 
                             Line::from(vec![entry_symbol, entry_filetype, entry_text])
@@ -396,7 +460,8 @@ impl App {
                                 Span::styled(original_file_name, Style::default().fg(fg_color));
                             let entry_symbol = match file.trashroot.root_type {
                                 TrashRootType::Home => Span::from("  "),
-                                _ => Span::from("💾"),
+                                // _ => Span::from("💾"),
+                                _ => Span::from("🢅 "),
                             };
                             Line::from(vec![entry_symbol, entry_filetype, entry_text])
                         };
@@ -547,7 +612,6 @@ impl App {
 
                 // scroll bar for the list
                 let scrollbar = if total_item_count <= self.max_visible_items {
-                    // Scrollbar::new(ScrollbarOrientation::VerticalRight).track_symbol(Some("░"));
                     Scrollbar::new(ScrollbarOrientation::VerticalRight)
                         .thumb_symbol("░")
                         .track_symbol(Some("░"))
@@ -747,6 +811,86 @@ impl App {
                     Span::styled(" cancel, ", Style::default()),
                 ]);
             }
+
+            AppState::EmptyBinConfirmation(choice) => {
+                // question in some mixed style
+                // let selected_file = &self.trashed_files[self.selected];
+                let question = Line::from(vec![Span::styled(
+                    "This will permanently delete ALL files in the trash bin forever",
+                    Style::default(),
+                )]);
+
+                // space between buttons
+                let spacer = Span::styled("      ", Style::default());
+
+                // illusion of buttons
+                let buttons = if *choice == 0 {
+                    Line::from(vec![
+                        Span::styled(
+                            "[Confirm]",
+                            Style::default()
+                                .add_modifier(Modifier::BOLD)
+                                .bg(Color::Black)
+                                .fg(Color::White),
+                        ),
+                        spacer,
+                        Span::styled("[Cancel]", Style::default()),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled("[Confirm]", Style::default()),
+                        spacer,
+                        Span::styled(
+                            "[Cancel]",
+                            Style::default()
+                                .add_modifier(Modifier::BOLD)
+                                .bg(Color::Black)
+                                .fg(Color::White),
+                        ),
+                    ])
+                };
+
+                // popup dialog
+                let area = f.area();
+                let block = Block::bordered()
+                    .title("Confirm Empty Bin")
+                    .style(Style::default().bg(Color::Gray).fg(Color::Black));
+                let area = popup_area(area, 30, 10);
+                let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
+                    .wrap(Wrap { trim: false })
+                    .alignment(Alignment::Center)
+                    .block(block);
+                f.render_widget(Clear, area); //this clears out the background
+                f.render_widget(dialog, area);
+
+                directions = Line::from(vec![
+                    Span::styled(
+                        "left/right h/l",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Green)
+                            .fg(Color::Black),
+                    ),
+                    Span::styled(" select, ", Style::default()),
+                    Span::styled(
+                        "enter",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Green)
+                            .fg(Color::Black),
+                    ),
+                    Span::styled(" confirm selection, ", Style::default()),
+                    Span::styled(
+                        "q/esc",
+                        Style::default()
+                            .add_modifier(Modifier::BOLD)
+                            .bg(Color::Green)
+                            .fg(Color::Black),
+                    ),
+                    Span::styled(" cancel, ", Style::default()),
+                ]);
+            }
+
             AppState::SortListDialog(choice) => {
                 let question = Line::from(vec![Span::styled(
                     "Select sort by column",
@@ -906,9 +1050,9 @@ impl App {
         f.render_widget(directions_block, chunks[2]);
     }
 
-    fn handle_input(&mut self, key: KeyCode) {
+    fn handle_input(&mut self, key: KeyEvent) {
         match self.state {
-            AppState::MainScreen => match key {
+            AppState::MainScreen => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     if self.selected > 0 {
                         self.selected -= 1;
@@ -943,7 +1087,13 @@ impl App {
                     self.state = AppState::RestoreConfirmation(0);
                 }
                 KeyCode::Delete => {
-                    self.state = AppState::DeletionConfirmation(0);
+                    if key.modifiers == KeyModifiers::SHIFT {
+                        // empty bin
+                        self.state = AppState::EmptyBinConfirmation(0);
+                    } else {
+                        // delete selected file
+                        self.state = AppState::DeletionConfirmation(0);
+                    }
                 }
                 KeyCode::Char('r') | KeyCode::F(5) => {
                     self.state = AppState::RefreshFileList;
@@ -966,7 +1116,7 @@ impl App {
             },
 
             AppState::RestoreConfirmation(choice) => {
-                match key {
+                match key.code {
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('h') => {
                         // Toggle between Yes (0) and No (1)
                         if let AppState::RestoreConfirmation(choice) = &mut self.state {
@@ -992,7 +1142,7 @@ impl App {
             }
 
             AppState::DeletionConfirmation(choice) => {
-                match key {
+                match key.code {
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('h') => {
                         // Toggle between Yes (0) and No (1)
                         if let AppState::DeletionConfirmation(choice) = &mut self.state {
@@ -1019,14 +1169,45 @@ impl App {
                 }
             }
 
-            AppState::SortListDialog(choice) => match key {
+            AppState::EmptyBinConfirmation(choice) => {
+                match key.code {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('h') => {
+                        // Toggle between Yes (0) and No (1)
+                        if let AppState::DeletionConfirmation(choice) = &mut self.state {
+                            *choice = if *choice == 0 { 1 } else { 0 };
+                        }
+                    }
+                    KeyCode::Enter => {
+                        // Confirm the action if Yes is selected
+                        if choice == 0 {
+                            for trash_file in &self.trashed_files {
+                                // one error shouldn't stop operation
+                                // TODO: DO NOT TEST THIS BEFORE FIXING THE .desktop BUG
+                                match trash_file.delete_forever() {
+                                    Ok(_) => {}
+                                    Err(_) => {} // todo: show an error notification
+                                }
+                            }
+                        }
+
+                        // Refresh and return to file list after action or cancel
+                        self.state = AppState::RefreshFileList;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        // Close the dialog without performing any action
+                        self.state = AppState::RefreshFileList;
+                    }
+                    _ => {}
+                }
+            }
+
+            AppState::SortListDialog(choice) => match key.code {
                 KeyCode::Down | KeyCode::Char('j') => {
                     let next_choice = match choice {
                         SortType::DeletionDate => SortType::TrashRoot,
                         SortType::TrashRoot => SortType::Size,
                         SortType::Size => SortType::FileName,
                         SortType::FileName => SortType::FileName,
-                        // SortType::FileType => SortType::FileType,
                     };
                     self.state = AppState::SortListDialog(next_choice);
                 }
@@ -1036,7 +1217,6 @@ impl App {
                         SortType::TrashRoot => SortType::DeletionDate,
                         SortType::Size => SortType::TrashRoot,
                         SortType::FileName => SortType::Size,
-                        // SortType::FileType => SortType::FileName,
                     };
                     self.state = AppState::SortListDialog(prev_choice);
                 }
@@ -1088,7 +1268,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 continue;
             }
 
-            app.handle_input(key.code)
+            app.handle_input(key)
         }
     }
 
