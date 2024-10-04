@@ -51,7 +51,6 @@ const PREVIEW_MAX_LINES: i32 = 20;
 // todo: open file with default viewer
 // todo: show a message of confirmation/failure
 // todo: show help on f1 with shortcuts
-// todo: message if trash bin is empty
 
 #[derive(Clone, Copy, PartialEq)]
 enum SortType {
@@ -137,348 +136,381 @@ impl App {
                     .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
                     .split(chunks[1]);
 
-                // file list area details
-                // 60% of the screen width
-                let file_list_width = (frame_area.width as f32 * 0.6).ceil() as usize;
-                // -2 for the border on top and bottom
-                let file_list_height =
-                    (frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT - 2) as usize;
-                self.max_visible_items = file_list_height;
-
+                let total_item_count = self.trashed_files.len();
                 let mut selected_desc: Text = Text::default();
                 let mut preview: Text = Text::default();
-                let preview_height: i32 =
-                    ((frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT) as f32 * 0.6).floor()
-                        as i32; // 60% of the midsection height
-                let scroll_end =
-                    (self.scroll_offset + self.max_visible_items).min(self.trashed_files.len());
 
-                // ================= file list
-                let list_items: Vec<ListItem> = self.trashed_files[self.scroll_offset..scroll_end]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, file)| {
-                        let original_file_name = file
-                            .original_file
-                            .file_name()
-                            .expect("file_name")
-                            .to_os_string()
-                            .into_string()
-                            .unwrap();
-
-                        // selection highlight padding
-                        let selection_padding =
-                            (file_list_width as usize).saturating_sub(original_file_name.len());
-                        let padded_str =
-                            format!("{}{}", original_file_name, " ".repeat(selection_padding));
-
-                        // checking if current item is the selected needs to
-                        // include the scroll offset
-                        let entry = if i == (self.selected - self.scroll_offset) {
-                            // generate description
-                            let f_size = file.get_size().expect("error while getting file size");
-                            let f_size_display = if f_size <= 1000 {
-                                format!("{f_size}B")
-                            } else if f_size <= 1000000 {
-                                format!("{}KB", f_size / 1000)
-                            } else {
-                                format!("{}MB", f_size / 1000000)
-                            };
-
-                            // absolute paths are available only for the
-                            // trashed files in the user's home
-                            let original_path = match file.trashroot.root_type {
-                                TrashRootType::Home => file.original_file.display().to_string(),
-                                _ => format!(
-                                    "{}{}{}",
-                                    file.trashroot.home.parent().unwrap().display().to_string(),
-                                    MAIN_SEPARATOR_STR,
-                                    file.original_file.to_str().unwrap()
-                                ),
-                            };
-
-                            let f_type: String = if file.files_entry.as_ref().unwrap().is_symlink()
-                            {
-                                "Link".to_string()
-                            } else if file.files_entry.as_ref().unwrap().is_dir() {
-                                "Directory".to_string()
-                            } else {
-                                "File".to_string()
-                            };
-
-                            selected_desc = Text::from(vec![
-                                Line::from(vec![
-                                    Span::styled(
-                                        "Original path: ",
-                                        Style::default().add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(original_path, Style::default().fg(Color::Gray)),
-                                ]),
-                                Line::from(vec![
-                                    Span::styled(
-                                        "Deleted on: ",
-                                        Style::default().add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(
-                                        file.trashinfo.as_ref().unwrap().deletion_date.clone(),
-                                        Style::default().fg(Color::Gray),
-                                    ),
-                                ]),
-                                Line::from(vec![
-                                    Span::styled(
-                                        "File Type: ",
-                                        Style::default().add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(f_type, Style::default().fg(Color::Gray)),
-                                ]),
-                                Line::from(vec![
-                                    Span::styled(
-                                        "File Size: ",
-                                        Style::default().add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(f_size_display, Style::default().fg(Color::Gray)),
-                                ]),
-                            ]);
-
-                            // generate file preview
-                            preview = if file.files_entry.as_ref().unwrap().is_symlink() {
-                                match fs::read_link(file.files_entry.as_ref().unwrap().clone()) {
-                                    Ok(target_path) => {
-                                        let target_path_str =
-                                            target_path.to_string_lossy().to_string();
-                                        Text::from(vec![Line::from(vec![
-                                            Span::styled(
-                                                "Original target: ",
-                                                Style::default()
-                                                    .add_modifier(Modifier::BOLD)
-                                                    .fg(Color::DarkGray),
-                                            ),
-                                            Span::styled(
-                                                target_path_str,
-                                                Style::default().fg(Color::White),
-                                            ),
-                                        ])])
-                                    }
-                                    Err(_e) => Text::styled(
-                                        "couldn't read link",
-                                        Style::default().fg(Color::LightRed),
-                                    ),
-                                }
-                            } else if file.files_entry.as_ref().unwrap().is_dir() {
-                                // show contents up to preview_height
-                                let mut lines = vec![];
-                                let entries = read_dir(file.files_entry.as_ref().unwrap().clone())
-                                    .unwrap()
-                                    .map(|res| res.map(|e| e.path()))
-                                    .collect::<Result<Vec<_>, io::Error>>()
-                                    .unwrap();
-
-                                let item_count = entries.len();
-                                if item_count == 0 {
-                                    lines.push(Line::from(vec![Span::styled(
-                                        "empty directory",
-                                        Style::default().fg(Color::DarkGray),
-                                    )]));
-                                } else {
-                                    lines.push(Line::from("."));
-                                    for (i, entry) in entries.into_iter().enumerate() {
-                                        if i > preview_height as usize {
-                                            break;
-                                        }
-
-                                        let indicator = if i + 1 < item_count {
-                                            Span::styled("├── ", Style::default())
-                                        } else {
-                                            Span::styled("└── ", Style::default())
-                                        };
-                                        let item = if entry.is_symlink() {
-                                            Span::styled(
-                                                entry
-                                                    .file_name()
-                                                    .unwrap()
-                                                    .to_os_string()
-                                                    .into_string()
-                                                    .unwrap(),
-                                                Style::default().fg(UNSELECTED_FG_COLOR_LINK),
-                                            )
-                                        } else if entry.is_dir() {
-                                            Span::styled(
-                                                entry
-                                                    .file_name()
-                                                    .unwrap()
-                                                    .to_os_string()
-                                                    .into_string()
-                                                    .unwrap(),
-                                                Style::default().fg(UNSELECTED_FG_COLOR_DIR),
-                                            )
-                                        } else {
-                                            Span::styled(
-                                                entry
-                                                    .file_name()
-                                                    .unwrap()
-                                                    .to_os_string()
-                                                    .into_string()
-                                                    .unwrap(),
-                                                Style::default().fg(UNSELECTED_FG_COLOR_FILE),
-                                            )
-                                        };
-                                        lines.push(Line::from(vec![indicator, item]));
-                                    }
-                                }
-                                Text::from(lines)
-                            } else if file.files_entry.as_ref().unwrap().is_file() {
-                                if file.get_size().ok().unwrap() == 0 {
-                                    Text::styled(
-                                        "empty file".to_string(),
-                                        Style::default().fg(Color::DarkGray),
-                                    )
-                                } else {
-                                    // check if file is a text readable
-                                    let prev_file =
-                                        File::open(file.files_entry.as_ref().unwrap().clone())
-                                            .unwrap();
-                                    let mut text_checker_reader = BufReader::new(&prev_file);
-                                    let mut text_checker_line = vec![];
-                                    let bytes_read = match text_checker_reader
-                                        .read_until(b'\n', &mut text_checker_line)
-                                    {
-                                        Ok(v) => v,
-                                        Err(_) => 0,
-                                    };
-
-                                    if bytes_read == 0 {
-                                        Text::styled(
-                                            "binary file",
-                                            Style::default().fg(Color::DarkGray),
-                                        )
-                                    } else {
-                                        let test_line_read =
-                                            from_utf8(&text_checker_line[..bytes_read]);
-                                        if test_line_read.is_err() || test_line_read.ok().is_none()
-                                        {
-                                            Text::styled(
-                                                "binary file",
-                                                Style::default().fg(Color::DarkGray),
-                                            )
-                                        } else {
-                                            // read at most 15 lines
-                                            let prev_file = File::open(
-                                                file.files_entry.as_ref().unwrap().clone(),
-                                            )
-                                            .unwrap();
-                                            let mut prev_reader = BufReader::new(prev_file);
-                                            let mut bytes_total: usize = 0;
-                                            let mut line_buff: Vec<u8> = vec![];
-                                            let mut eof_reached = false;
-                                            for _ in 1..preview_height.min(PREVIEW_MAX_LINES) {
-                                                let bytes_read = match prev_reader
-                                                    .read_until(b'\n', &mut line_buff)
-                                                {
-                                                    Ok(v) => v,
-                                                    Err(_) => 0,
-                                                };
-
-                                                // EOF
-                                                if bytes_read == 0 {
-                                                    eof_reached = true;
-                                                    break;
-                                                }
-
-                                                bytes_total += bytes_read;
-                                            }
-
-                                            // some files could be non-text even
-                                            // though the first line is textual
-                                            match from_utf8(&line_buff[..bytes_total]) {
-                                                Ok(v) => {
-                                                    let mut content = v.to_owned();
-                                                    if !eof_reached {
-                                                        content.push_str("\n...");
-                                                    }
-                                                    Text::styled(
-                                                        content,
-                                                        Style::default().fg(Color::Gray),
-                                                    )
-                                                }
-                                                Err(_) => Text::styled(
-                                                    "binary file",
-                                                    Style::default().fg(Color::DarkGray),
-                                                ),
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                Text::styled(
-                                    "unknown file type",
-                                    Style::default().fg(Color::DarkGray),
-                                )
-                            };
-
-                            // generate list item entry
-                            let (fg_color, entry_filetype) =
-                                if file.files_entry.as_ref().unwrap().is_symlink() {
-                                    (SELECTED_FG_COLOR_LINK, Span::from("🔗"))
-                                } else if file.files_entry.as_ref().unwrap().is_dir() {
-                                    (SELECTED_FG_COLOR_DIR, Span::from("📁"))
-                                } else {
-                                    (SELECTED_FG_COLOR_FILE, Span::from("📄"))
-                                };
-
-                            let entry_text = Span::styled(
-                                padded_str,
-                                Style::default()
-                                    .bg(SELECTED_BG_COLOR)
-                                    .fg(fg_color)
-                                    .add_modifier(Modifier::BOLD),
-                            );
-
-                            let entry_symbol = match file.trashroot.root_type {
-                                TrashRootType::Home => Span::from("  "),
-                                // _ => Span::from("💾"),
-                                _ => Span::from("🢅 "),
-                            };
-
-                            Line::from(vec![entry_symbol, entry_filetype, entry_text])
-                        } else {
-                            let (fg_color, entry_filetype) =
-                                if file.files_entry.as_ref().unwrap().is_symlink() {
-                                    (UNSELECTED_FG_COLOR_LINK, Span::from("🔗"))
-                                } else if file.files_entry.as_ref().unwrap().is_dir() {
-                                    (UNSELECTED_FG_COLOR_DIR, Span::from("📁"))
-                                } else {
-                                    (UNSELECTED_FG_COLOR_FILE, Span::from("📄"))
-                                };
-                            let entry_text =
-                                Span::styled(original_file_name, Style::default().fg(fg_color));
-                            let entry_symbol = match file.trashroot.root_type {
-                                TrashRootType::Home => Span::from("  "),
-                                // _ => Span::from("💾"),
-                                _ => Span::from("🢅 "),
-                            };
-                            Line::from(vec![entry_symbol, entry_filetype, entry_text])
-                        };
-
-                        ListItem::new(entry)
-                    })
-                    .collect();
-
-                let total_item_count = self.trashed_files.len();
-                let list = List::new(list_items)
-                    .block(
+                // if empty bin, show kitty
+                if total_item_count == 0 {
+                    let empty_note = r#"
+          |\      _,,,---,,_
+    ZZZzz /,`.-'`'    -.  ;-;;,_
+         |,4-  ) )-,_. ,\ (  `'-'
+        '---''(_/--'  `-'\_)
+                        "#;
+                    let note = Paragraph::new(empty_note).block(
                         Block::default().borders(Borders::ALL).title(Span::styled(
-                            format!(
-                                "Files in Trash [{}/{}]",
-                                self.selected + 1,
-                                total_item_count,
-                            ),
+                            "Files in Trash [Empty]".to_string(),
                             Style::default()
                                 .bg(Color::Green)
                                 .fg(Color::Black)
                                 .add_modifier(Modifier::BOLD),
                         )),
-                    )
-                    .highlight_style(Style::default().fg(Color::Yellow));
+                    );
+                    f.render_widget(note, midsection_chunks[0]);
+                } else {
+                    // file list area details
+                    // 60% of the screen width
+                    let file_list_width = (frame_area.width as f32 * 0.6).ceil() as usize;
+                    // -2 for the border on top and bottom
+                    let file_list_height =
+                        (frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT - 2) as usize;
+                    self.max_visible_items = file_list_height;
+
+                    let preview_height: i32 =
+                        ((frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT) as f32 * 0.6).floor()
+                            as i32; // 60% of the midsection height
+                    let scroll_end =
+                        (self.scroll_offset + self.max_visible_items).min(self.trashed_files.len());
+
+                    // ================= file list
+                    let list_items: Vec<ListItem> = self.trashed_files
+                        [self.scroll_offset..scroll_end]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, file)| {
+                            let original_file_name = file
+                                .original_file
+                                .file_name()
+                                .expect("file_name")
+                                .to_os_string()
+                                .into_string()
+                                .unwrap();
+
+                            // selection highlight padding
+                            let selection_padding =
+                                (file_list_width as usize).saturating_sub(original_file_name.len());
+                            let padded_str =
+                                format!("{}{}", original_file_name, " ".repeat(selection_padding));
+
+                            // checking if current item is the selected needs to
+                            // include the scroll offset
+                            let entry = if i == (self.selected - self.scroll_offset) {
+                                // generate description
+                                let f_size =
+                                    file.get_size().expect("error while getting file size");
+                                let f_size_display = if f_size <= 1000 {
+                                    format!("{f_size}B")
+                                } else if f_size <= 1000000 {
+                                    format!("{}KB", f_size / 1000)
+                                } else {
+                                    format!("{}MB", f_size / 1000000)
+                                };
+
+                                // absolute paths are available only for the
+                                // trashed files in the user's home
+                                let original_path = match file.trashroot.root_type {
+                                    TrashRootType::Home => file.original_file.display().to_string(),
+                                    _ => format!(
+                                        "{}{}{}",
+                                        file.trashroot.home.parent().unwrap().display().to_string(),
+                                        MAIN_SEPARATOR_STR,
+                                        file.original_file.to_str().unwrap()
+                                    ),
+                                };
+
+                                let f_type: String =
+                                    if file.files_entry.as_ref().unwrap().is_symlink() {
+                                        "Link".to_string()
+                                    } else if file.files_entry.as_ref().unwrap().is_dir() {
+                                        "Directory".to_string()
+                                    } else {
+                                        "File".to_string()
+                                    };
+
+                                selected_desc = Text::from(vec![
+                                    Line::from(vec![
+                                        Span::styled(
+                                            "Original path: ",
+                                            Style::default().add_modifier(Modifier::BOLD),
+                                        ),
+                                        Span::styled(
+                                            original_path,
+                                            Style::default().fg(Color::Gray),
+                                        ),
+                                    ]),
+                                    Line::from(vec![
+                                        Span::styled(
+                                            "Deleted on: ",
+                                            Style::default().add_modifier(Modifier::BOLD),
+                                        ),
+                                        Span::styled(
+                                            file.trashinfo.as_ref().unwrap().deletion_date.clone(),
+                                            Style::default().fg(Color::Gray),
+                                        ),
+                                    ]),
+                                    Line::from(vec![
+                                        Span::styled(
+                                            "File Type: ",
+                                            Style::default().add_modifier(Modifier::BOLD),
+                                        ),
+                                        Span::styled(f_type, Style::default().fg(Color::Gray)),
+                                    ]),
+                                    Line::from(vec![
+                                        Span::styled(
+                                            "File Size: ",
+                                            Style::default().add_modifier(Modifier::BOLD),
+                                        ),
+                                        Span::styled(
+                                            f_size_display,
+                                            Style::default().fg(Color::Gray),
+                                        ),
+                                    ]),
+                                ]);
+
+                                // generate file preview
+                                preview = if file.files_entry.as_ref().unwrap().is_symlink() {
+                                    match fs::read_link(file.files_entry.as_ref().unwrap().clone())
+                                    {
+                                        Ok(target_path) => {
+                                            let target_path_str =
+                                                target_path.to_string_lossy().to_string();
+                                            Text::from(vec![Line::from(vec![
+                                                Span::styled(
+                                                    "Original target: ",
+                                                    Style::default()
+                                                        .add_modifier(Modifier::BOLD)
+                                                        .fg(Color::DarkGray),
+                                                ),
+                                                Span::styled(
+                                                    target_path_str,
+                                                    Style::default().fg(Color::White),
+                                                ),
+                                            ])])
+                                        }
+                                        Err(_e) => Text::styled(
+                                            "couldn't read link",
+                                            Style::default().fg(Color::LightRed),
+                                        ),
+                                    }
+                                } else if file.files_entry.as_ref().unwrap().is_dir() {
+                                    // show contents up to preview_height
+                                    let mut lines = vec![];
+                                    let entries =
+                                        read_dir(file.files_entry.as_ref().unwrap().clone())
+                                            .unwrap()
+                                            .map(|res| res.map(|e| e.path()))
+                                            .collect::<Result<Vec<_>, io::Error>>()
+                                            .unwrap();
+
+                                    let item_count = entries.len();
+                                    if item_count == 0 {
+                                        lines.push(Line::from(vec![Span::styled(
+                                            "empty directory",
+                                            Style::default().fg(Color::DarkGray),
+                                        )]));
+                                    } else {
+                                        lines.push(Line::from("."));
+                                        for (i, entry) in entries.into_iter().enumerate() {
+                                            if i > preview_height as usize {
+                                                break;
+                                            }
+
+                                            let indicator = if i + 1 < item_count {
+                                                Span::styled("├── ", Style::default())
+                                            } else {
+                                                Span::styled("└── ", Style::default())
+                                            };
+                                            let item = if entry.is_symlink() {
+                                                Span::styled(
+                                                    entry
+                                                        .file_name()
+                                                        .unwrap()
+                                                        .to_os_string()
+                                                        .into_string()
+                                                        .unwrap(),
+                                                    Style::default().fg(UNSELECTED_FG_COLOR_LINK),
+                                                )
+                                            } else if entry.is_dir() {
+                                                Span::styled(
+                                                    entry
+                                                        .file_name()
+                                                        .unwrap()
+                                                        .to_os_string()
+                                                        .into_string()
+                                                        .unwrap(),
+                                                    Style::default().fg(UNSELECTED_FG_COLOR_DIR),
+                                                )
+                                            } else {
+                                                Span::styled(
+                                                    entry
+                                                        .file_name()
+                                                        .unwrap()
+                                                        .to_os_string()
+                                                        .into_string()
+                                                        .unwrap(),
+                                                    Style::default().fg(UNSELECTED_FG_COLOR_FILE),
+                                                )
+                                            };
+                                            lines.push(Line::from(vec![indicator, item]));
+                                        }
+                                    }
+                                    Text::from(lines)
+                                } else if file.files_entry.as_ref().unwrap().is_file() {
+                                    if file.get_size().ok().unwrap() == 0 {
+                                        Text::styled(
+                                            "empty file".to_string(),
+                                            Style::default().fg(Color::DarkGray),
+                                        )
+                                    } else {
+                                        // check if file is a text readable
+                                        let prev_file =
+                                            File::open(file.files_entry.as_ref().unwrap().clone())
+                                                .unwrap();
+                                        let mut text_checker_reader = BufReader::new(&prev_file);
+                                        let mut text_checker_line = vec![];
+                                        let bytes_read = match text_checker_reader
+                                            .read_until(b'\n', &mut text_checker_line)
+                                        {
+                                            Ok(v) => v,
+                                            Err(_) => 0,
+                                        };
+
+                                        if bytes_read == 0 {
+                                            Text::styled(
+                                                "binary file",
+                                                Style::default().fg(Color::DarkGray),
+                                            )
+                                        } else {
+                                            let test_line_read =
+                                                from_utf8(&text_checker_line[..bytes_read]);
+                                            if test_line_read.is_err()
+                                                || test_line_read.ok().is_none()
+                                            {
+                                                Text::styled(
+                                                    "binary file",
+                                                    Style::default().fg(Color::DarkGray),
+                                                )
+                                            } else {
+                                                // read at most 15 lines
+                                                let prev_file = File::open(
+                                                    file.files_entry.as_ref().unwrap().clone(),
+                                                )
+                                                .unwrap();
+                                                let mut prev_reader = BufReader::new(prev_file);
+                                                let mut bytes_total: usize = 0;
+                                                let mut line_buff: Vec<u8> = vec![];
+                                                let mut eof_reached = false;
+                                                for _ in 1..preview_height.min(PREVIEW_MAX_LINES) {
+                                                    let bytes_read = match prev_reader
+                                                        .read_until(b'\n', &mut line_buff)
+                                                    {
+                                                        Ok(v) => v,
+                                                        Err(_) => 0,
+                                                    };
+
+                                                    // EOF
+                                                    if bytes_read == 0 {
+                                                        eof_reached = true;
+                                                        break;
+                                                    }
+
+                                                    bytes_total += bytes_read;
+                                                }
+
+                                                // some files could be non-text even
+                                                // though the first line is textual
+                                                match from_utf8(&line_buff[..bytes_total]) {
+                                                    Ok(v) => {
+                                                        let mut content = v.to_owned();
+                                                        if !eof_reached {
+                                                            content.push_str("\n...");
+                                                        }
+                                                        Text::styled(
+                                                            content,
+                                                            Style::default().fg(Color::Gray),
+                                                        )
+                                                    }
+                                                    Err(_) => Text::styled(
+                                                        "binary file",
+                                                        Style::default().fg(Color::DarkGray),
+                                                    ),
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Text::styled(
+                                        "unknown file type",
+                                        Style::default().fg(Color::DarkGray),
+                                    )
+                                };
+
+                                // generate list item entry
+                                let (fg_color, entry_filetype) =
+                                    if file.files_entry.as_ref().unwrap().is_symlink() {
+                                        (SELECTED_FG_COLOR_LINK, Span::from("🔗"))
+                                    } else if file.files_entry.as_ref().unwrap().is_dir() {
+                                        (SELECTED_FG_COLOR_DIR, Span::from("📁"))
+                                    } else {
+                                        (SELECTED_FG_COLOR_FILE, Span::from("📄"))
+                                    };
+
+                                let entry_text = Span::styled(
+                                    padded_str,
+                                    Style::default()
+                                        .bg(SELECTED_BG_COLOR)
+                                        .fg(fg_color)
+                                        .add_modifier(Modifier::BOLD),
+                                );
+
+                                let entry_symbol = match file.trashroot.root_type {
+                                    TrashRootType::Home => Span::from("  "),
+                                    // _ => Span::from("💾"),
+                                    _ => Span::from("🢅 "),
+                                };
+
+                                Line::from(vec![entry_symbol, entry_filetype, entry_text])
+                            } else {
+                                let (fg_color, entry_filetype) =
+                                    if file.files_entry.as_ref().unwrap().is_symlink() {
+                                        (UNSELECTED_FG_COLOR_LINK, Span::from("🔗"))
+                                    } else if file.files_entry.as_ref().unwrap().is_dir() {
+                                        (UNSELECTED_FG_COLOR_DIR, Span::from("📁"))
+                                    } else {
+                                        (UNSELECTED_FG_COLOR_FILE, Span::from("📄"))
+                                    };
+                                let entry_text =
+                                    Span::styled(original_file_name, Style::default().fg(fg_color));
+                                let entry_symbol = match file.trashroot.root_type {
+                                    TrashRootType::Home => Span::from("  "),
+                                    // _ => Span::from("💾"),
+                                    _ => Span::from("🢅 "),
+                                };
+                                Line::from(vec![entry_symbol, entry_filetype, entry_text])
+                            };
+
+                            ListItem::new(entry)
+                        })
+                        .collect();
+
+                    let list = List::new(list_items)
+                        .block(
+                            Block::default().borders(Borders::ALL).title(Span::styled(
+                                format!(
+                                    "Files in Trash [{}/{}]",
+                                    self.selected + 1,
+                                    total_item_count,
+                                ),
+                                Style::default()
+                                    .bg(Color::Green)
+                                    .fg(Color::Black)
+                                    .add_modifier(Modifier::BOLD),
+                            )),
+                        )
+                        .highlight_style(Style::default().fg(Color::Yellow));
+                    f.render_widget(list, midsection_chunks[0]);
+                }
 
                 // ============= right column
                 let desc_chunks = Layout::default()
@@ -501,6 +533,8 @@ impl App {
                     .wrap(Wrap { trim: false })
                     .block(desc_block);
 
+                f.render_widget(desc_text, desc_chunks[0]);
+
                 // -------------------- preview
                 let preview_block = Block::default()
                     .title(Span::styled(
@@ -515,6 +549,22 @@ impl App {
                 let preview_text = Paragraph::new(preview)
                     .wrap(Wrap { trim: false })
                     .block(preview_block);
+
+                f.render_widget(preview_text, desc_chunks[1]);
+
+                // ---------------------- scroll bar for the list
+                let scrollbar = if total_item_count <= self.max_visible_items {
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                        .thumb_symbol("░")
+                        .track_symbol(Some("░"))
+                } else {
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                        .thumb_symbol("█")
+                        .track_symbol(Some("░"))
+                };
+                let mut scrollbar_state =
+                    ScrollbarState::new(total_item_count).position(self.selected);
+                f.render_stateful_widget(scrollbar, midsection_chunks[0], &mut scrollbar_state);
 
                 // -------------------- shortcuts
                 let sort_value = match self.sort_type {
@@ -598,24 +648,6 @@ impl App {
                     ),
                     Span::styled(" Go to bottom", Style::default()),
                 ]);
-
-                f.render_widget(list, midsection_chunks[0]);
-                f.render_widget(desc_text, desc_chunks[0]);
-                f.render_widget(preview_text, desc_chunks[1]);
-
-                // scroll bar for the list
-                let scrollbar = if total_item_count <= self.max_visible_items {
-                    Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                        .thumb_symbol("░")
-                        .track_symbol(Some("░"))
-                } else {
-                    Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                        .thumb_symbol("█")
-                        .track_symbol(Some("░"))
-                };
-                let mut scrollbar_state =
-                    ScrollbarState::new(total_item_count).position(self.selected);
-                f.render_stateful_widget(scrollbar, midsection_chunks[0], &mut scrollbar_state);
             }
 
             AppState::RestoreConfirmation(choice) => {
