@@ -20,7 +20,7 @@ use ratatui::widgets::{
 use ratatui::{restore, Frame, Terminal};
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader};
 use std::path::MAIN_SEPARATOR_STR;
 use std::str::from_utf8;
 
@@ -41,9 +41,8 @@ const FOOTER_HEIGHT: u16 = 3;
 // how many items on each side before scrolling starts
 const FILELIST_SCROLL_VIEW_OFFSET: usize = 3;
 
-// todo - empty trash bin function
-//  1. empty all trash - may error out because of permissions
-//  2. empty home trash - sure fire
+const PREVIEW_MAX_LINES: i32 = 20;
+
 // todo: filter by
 //  - root type
 //  - large files
@@ -135,22 +134,16 @@ impl App {
             AppState::MainScreen => {
                 let midsection_chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
+                    .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
                     .split(chunks[1]);
 
                 // file list area details
                 // 60% of the screen width
                 let file_list_width = (frame_area.width as f32 * 0.6).ceil() as usize;
-                // -2 for left and right border
-                // let file_list_inner_width = file_list_width - 2;
                 // -2 for the border on top and bottom
                 let file_list_height =
                     (frame_area.height - TITLE_HEIGHT - FOOTER_HEIGHT - 2) as usize;
                 self.max_visible_items = file_list_height;
-                // +1 for the left border
-                // let file_list_inner_x = 1;
-                // +1 for the top border
-                // let file_list_inner_y = TITLE_HEIGHT + 1;
 
                 let mut selected_desc: Text = Text::default();
                 let mut preview: Text = Text::default();
@@ -216,13 +209,6 @@ impl App {
                             selected_desc = Text::from(vec![
                                 Line::from(vec![
                                     Span::styled(
-                                        "File Type: ",
-                                        Style::default().add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(f_type, Style::default().fg(Color::Gray)),
-                                ]),
-                                Line::from(vec![
-                                    Span::styled(
                                         "Original path: ",
                                         Style::default().add_modifier(Modifier::BOLD),
                                     ),
@@ -237,6 +223,13 @@ impl App {
                                         file.trashinfo.as_ref().unwrap().deletion_date.clone(),
                                         Style::default().fg(Color::Gray),
                                     ),
+                                ]),
+                                Line::from(vec![
+                                    Span::styled(
+                                        "File Type: ",
+                                        Style::default().add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(f_type, Style::default().fg(Color::Gray)),
                                 ]),
                                 Line::from(vec![
                                     Span::styled(
@@ -377,7 +370,7 @@ impl App {
                                             let mut bytes_total: usize = 0;
                                             let mut line_buff: Vec<u8> = vec![];
                                             let mut eof_reached = false;
-                                            for _ in 1..preview_height.min(15) {
+                                            for _ in 1..preview_height.min(PREVIEW_MAX_LINES) {
                                                 let bytes_read = match prev_reader
                                                     .read_until(b'\n', &mut line_buff)
                                                 {
@@ -490,7 +483,7 @@ impl App {
                 // ============= right column
                 let desc_chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+                    .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
                     .split(midsection_chunks[1]);
 
                 // -------------------- description
@@ -1182,7 +1175,6 @@ impl App {
                         if choice == 0 {
                             for trash_file in &self.trashed_files {
                                 // one error shouldn't stop operation
-                                // TODO: DO NOT TEST THIS BEFORE FIXING THE .desktop BUG
                                 match trash_file.delete_forever() {
                                     Ok(_) => {}
                                     Err(_) => {} // todo: show an error notification
