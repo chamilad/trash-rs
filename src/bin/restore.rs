@@ -525,7 +525,7 @@ impl App {
                                 };
 
                                 let entry_text = Span::styled(
-                                    padded_str,
+                                    original_file_name,
                                     Style::default()
                                         .bg(self.get_color(ThemeColor::SelectedBG))
                                         .fg(fg_color)
@@ -537,7 +537,9 @@ impl App {
                                     _ => Span::from("🢅 "),
                                 };
 
-                                Line::from(vec![entry_symbol, entry_filetype, entry_text])
+                                Line::from(vec![entry_symbol, entry_filetype, entry_text]).style(
+                                    Style::default().bg(self.get_color(ThemeColor::SelectedBG)),
+                                )
                             } else {
                                 let (fg_color, entry_filetype) =
                                     if file.files_entry.as_ref().unwrap().is_symlink() {
@@ -722,7 +724,10 @@ impl App {
                 // popup dialog
                 let area = f.area();
                 let block = Block::bordered()
-                    .title("Confirm Restoration")
+                    .title(Span::styled(
+                        "Confirm Restore",
+                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                    ))
                     .style(dialog_style.clone());
                 let area = popup_area(area, 40, 15);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
@@ -733,7 +738,7 @@ impl App {
                 f.render_widget(dialog, area);
 
                 directions = Line::from(vec![
-                    Span::styled("left/right h/l", title_style.clone()),
+                    Span::styled("←→/hl", title_style.clone()),
                     Span::styled(" - select, ", Style::default()),
                     Span::styled("enter", title_style.clone()),
                     Span::styled(" - confirm selection, ", Style::default()),
@@ -783,7 +788,10 @@ impl App {
                 // popup dialog
                 let area = f.area();
                 let block = Block::bordered()
-                    .title("Confirm Deletion")
+                    .title(Span::styled(
+                        "Confirm Deletion",
+                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                    ))
                     .style(dialog_style.clone());
                 let area = popup_area(area, 40, 15);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
@@ -794,7 +802,7 @@ impl App {
                 f.render_widget(dialog, area);
 
                 directions = Line::from(vec![
-                    Span::styled("left/right h/l", title_style.clone()),
+                    Span::styled("←→/hl", title_style.clone()),
                     Span::styled(" - select, ", Style::default()),
                     Span::styled("enter", title_style.clone()),
                     Span::styled(" - confirm selection, ", Style::default()),
@@ -831,7 +839,10 @@ impl App {
                 // popup dialog
                 let area = f.area();
                 let block = Block::bordered()
-                    .title("Confirm Empty Bin")
+                    .title(Span::styled(
+                        "Confirm Empty Bin",
+                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                    ))
                     .style(dialog_style.clone());
                 let area = popup_area(area, 30, 10);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
@@ -842,7 +853,7 @@ impl App {
                 f.render_widget(dialog, area);
 
                 directions = Line::from(vec![
-                    Span::styled("left/right h/l", title_style.clone()),
+                    Span::styled("←→/hl", title_style.clone()),
                     Span::styled(" - select, ", Style::default()),
                     Span::styled("enter", title_style.clone()),
                     Span::styled(" - confirm selection, ", Style::default()),
@@ -924,7 +935,10 @@ impl App {
 
                 let area = f.area();
                 let block = Block::bordered()
-                    .title("Sort files by")
+                    .title(Span::styled(
+                        "Sort Files By",
+                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                    ))
                     .style(dialog_style.clone());
                 let area = popup_area(area, 30, 15);
                 let dialog = Paragraph::new(dialog_content)
@@ -935,7 +949,7 @@ impl App {
                 f.render_widget(dialog, area);
 
                 directions = Line::from(vec![
-                    Span::styled("up/down k/j", title_style.clone()),
+                    Span::styled("↓↑/jk", title_style.clone()),
                     Span::styled(" - select, ", Style::default()),
                     Span::styled("enter", title_style.clone()),
                     Span::styled(" - confirm selection, ", Style::default()),
@@ -1289,15 +1303,15 @@ impl App {
             }
         } else {
             match color {
-                ThemeColor::Highlight => Color::Black,
+                ThemeColor::Highlight => Color::DarkGray,
                 ThemeColor::TitleText => Color::White,
                 ThemeColor::Text => Color::DarkGray,
                 ThemeColor::BoldText => Color::Black,
                 ThemeColor::ErrorText => Color::LightRed,
                 ThemeColor::SelectedFGDir => Color::LightBlue,
-                ThemeColor::SelectedFGLink => Color::Magenta,
-                ThemeColor::SelectedFGFile => Color::White,
-                ThemeColor::SelectedBG => Color::Black,
+                ThemeColor::SelectedFGLink => Color::LightMagenta,
+                ThemeColor::SelectedFGFile => Color::Black,
+                ThemeColor::SelectedBG => Color::Gray,
                 ThemeColor::UnselectedFGDir => Color::Blue,
                 ThemeColor::UnselectedFGLink => Color::Magenta,
                 ThemeColor::UnselectedFGFile => Color::Black,
