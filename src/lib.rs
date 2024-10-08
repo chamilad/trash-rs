@@ -617,8 +617,15 @@ impl TrashInfo {
 
         // are to be in the YYYY-MM-DDThh:mm:ss format (see RFC 3339).
         // The time zone should be the user's (or filesystem's) local time
-        let deletion_date_fmt =
+        let mut deletion_date_fmt =
             deletion_date.to_rfc3339_opts(chrono::format::SecondsFormat::Secs, true);
+        // drop everything after + or Z
+        for offset_char in vec!["+", "z", "Z"] {
+            let tz_offset = deletion_date_fmt
+                .find(offset_char)
+                .unwrap_or(deletion_date_fmt.len());
+            deletion_date_fmt.replace_range(tz_offset.., "");
+        }
 
         TrashInfo {
             original_path: file_path_encoded.to_string(),
@@ -688,6 +695,28 @@ DeletionDate={}
         };
 
         Ok(&self.path)
+    }
+
+    pub fn get_deletion_date(&self) -> DateTime<Local> {
+        // sometimes deletion date has tz info because of a bug from a previous commit
+        // drop everything after + or Z
+        let mut deletion_date = self.deletion_date.clone();
+        for offset_char in vec!["+", "z", "Z"] {
+            let tz_offset = deletion_date
+                .find(offset_char)
+                .unwrap_or(deletion_date.len());
+            deletion_date.replace_range(tz_offset.., "");
+        }
+
+        // assume user/machine local tz
+        let now = Local::now();
+        let diff_mins = now.offset().local_minus_utc() / 60;
+        let diff_hours = diff_mins as i32 / 60 as i32; // floor result
+        let diff_mins_remaining = diff_mins % 60;
+        let deletion_datetime = format!("{deletion_date}+{diff_hours}:{diff_mins_remaining:02}");
+        // println!("date: {}", deletion_datetime);
+
+        deletion_datetime.parse().unwrap()
     }
 }
 

@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fs::read_dir;
 
+use chrono::Local;
 use crossterm::event::KeyModifiers;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use libtrash::*;
@@ -22,7 +23,7 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
-use std::path::MAIN_SEPARATOR_STR;
+use std::path::{PathBuf, MAIN_SEPARATOR_STR};
 use std::str::from_utf8;
 
 const VERBOSE_MODE: bool = false;
@@ -85,7 +86,6 @@ enum ThemeColor {
     UnselectedFGFile,
     DialogBG,
     DialogText,
-    // DialogBoldText,
     DialogButtonBG,
     DialogButtonText,
 }
@@ -149,8 +149,7 @@ impl App {
 
         let frame_area = f.area();
         let title = " Trash Bin";
-        let padding = (frame_area.width as usize).saturating_sub(title.len());
-        let padded_title = format!("{}{}", title, " ".repeat(padding));
+        let padded_title = format!("{title:<width$}", width = frame_area.width as usize);
         let title =
             Paragraph::new(Text::styled(padded_title, title_style.clone())).block(title_block);
         f.render_widget(title, main_horizontal_blocks[0]);
@@ -223,12 +222,6 @@ impl App {
                                 .into_string()
                                 .unwrap();
 
-                            // selection highlight padding
-                            let selection_padding =
-                                (file_list_width as usize).saturating_sub(original_file_name.len());
-                            let padded_str =
-                                format!("{}{}", original_file_name, " ".repeat(selection_padding));
-
                             // checking if current item is the selected needs to
                             // include the scroll offset
                             let entry = if i == (self.selected - self.scroll_offset) {
@@ -239,14 +232,27 @@ impl App {
                                     format!("{f_size}B")
                                 } else if f_size <= 1000000 {
                                     format!("{}KB", f_size / 1000)
-                                } else {
+                                } else if f_size <= 1000000000 {
                                     format!("{}MB", f_size / 1000000)
+                                } else {
+                                    format!("{}GB", f_size / 1000000000)
                                 };
 
                                 // absolute paths are available only for the
                                 // trashed files in the user's home
-                                let original_path = match file.trashroot.root_type {
-                                    TrashRootType::Home => file.original_file.display().to_string(),
+                                // also replace home with ~
+                                let original_path_display = match file.trashroot.root_type {
+                                    TrashRootType::Home => {
+                                        match get_home_dir() {
+                                            Ok(v) => file
+                                                .original_file
+                                                .display()
+                                                .to_string()
+                                                .replace(v.display().to_string().as_str(), "~"),
+                                            Err(_) => file.original_file.display().to_string(),
+                                        }
+                                        // file.original_file.display().to_string()
+                                    }
                                     _ => format!(
                                         "{}{}{}",
                                         file.trashroot.home.parent().unwrap().display().to_string(),
@@ -273,7 +279,7 @@ impl App {
                                                 .add_modifier(Modifier::BOLD),
                                         ),
                                         Span::styled(
-                                            original_path,
+                                            original_path_display.clone(),
                                             Style::default().fg(self.get_color(ThemeColor::Text)),
                                         ),
                                     ]),
@@ -309,7 +315,7 @@ impl App {
                                                 .add_modifier(Modifier::BOLD),
                                         ),
                                         Span::styled(
-                                            f_size_display,
+                                            f_size_display.clone(),
                                             Style::default().fg(self.get_color(ThemeColor::Text)),
                                         ),
                                     ]),
@@ -507,7 +513,7 @@ impl App {
                                         }
                                     }
                                 } else {
-                                    Text::styled("unknown file type", message_style.clone())
+                                    Text::styled("unknown file type", err_message_style.clone())
                                 };
 
                                 // generate list item entry
@@ -524,8 +530,31 @@ impl App {
                                     (self.get_color(ThemeColor::SelectedFGFile), Span::from("📄"))
                                 };
 
+                                // icons + filename                     + subtitle
+                                // 1+1+1   width - (icons + substitle)     2+18
+                                // if sort by filename
+                                //  icons + width - icons
+
+                                let max_subtitle_length = 16;
+                                let max_filename_length = match self.sort_type {
+                                    SortType::FileName => file_list_width - 2 - 4, // border - icon columns (unicode is two columns)
+                                    _ => file_list_width - 2 - 4 - max_subtitle_length, // border - icon columns - spacer between subtitle
+                                };
+
+                                let file_name_display = if original_file_name.len()
+                                    >= max_filename_length
+                                {
+                                    format!("{}..", &original_file_name[..max_filename_length - 2])
+                                } else {
+                                    format!(
+                                        "{:<width$}",
+                                        original_file_name,
+                                        width = max_filename_length - 1
+                                    )
+                                };
+
                                 let entry_text = Span::styled(
-                                    original_file_name,
+                                    file_name_display,
                                     Style::default()
                                         .bg(self.get_color(ThemeColor::SelectedBG))
                                         .fg(fg_color)
@@ -537,9 +566,58 @@ impl App {
                                     _ => Span::from("🢅 "),
                                 };
 
-                                Line::from(vec![entry_symbol, entry_filetype, entry_text]).style(
-                                    Style::default().bg(self.get_color(ThemeColor::SelectedBG)),
-                                )
+                                let subtitle = match self.sort_type {
+                                    SortType::DeletionDate => {
+                                        let now = Local::now();
+                                        let diff = now
+                                            - file.trashinfo.clone().unwrap().get_deletion_date();
+                                        if diff.num_days() != 0 {
+                                            format!("{} days ago", diff.num_days())
+                                        } else if diff.num_hours() != 0 {
+                                            format!("{} hours ago", diff.num_hours())
+                                        } else if diff.num_minutes() != 0 {
+                                            format!("{} minutes ago", diff.num_minutes())
+                                        } else {
+                                            format!("{} seconds ago", diff.num_seconds())
+                                        }
+                                    }
+                                    SortType::TrashRoot => {
+                                        if original_path_display.len() > max_subtitle_length {
+                                            format!(
+                                                "{:>width$}..",
+                                                &original_path_display[..max_subtitle_length - 2],
+                                                width = max_subtitle_length - 2
+                                            )
+                                        } else {
+                                            format!("{original_path_display}")
+                                        }
+                                    }
+                                    SortType::Size => format!(
+                                        "{:>width$}",
+                                        f_size_display,
+                                        width = max_subtitle_length - 1
+                                    ),
+                                    SortType::FileName => "".to_string(),
+                                };
+
+                                let subtitle_span = Span::styled(
+                                    format!(
+                                        "{:>width$} ",
+                                        subtitle,
+                                        width = max_subtitle_length - 1
+                                    ),
+                                    Style::default()
+                                        .fg(self.get_color(ThemeColor::SelectedFGFile))
+                                        .add_modifier(Modifier::ITALIC),
+                                );
+
+                                Line::from(vec![
+                                    entry_symbol,
+                                    entry_filetype,
+                                    entry_text,
+                                    subtitle_span,
+                                ])
+                                .style(Style::default().bg(self.get_color(ThemeColor::SelectedBG)))
                             } else {
                                 let (fg_color, entry_filetype) =
                                     if file.files_entry.as_ref().unwrap().is_symlink() {
@@ -558,8 +636,18 @@ impl App {
                                             Span::from("📄"),
                                         )
                                     };
+
+                                let max_filename_length = file_list_width - 2 - 4; // border - icon columns
+                                let file_name_display = if original_file_name.len()
+                                    >= max_filename_length
+                                {
+                                    format!("{}..", &original_file_name[..max_filename_length - 2])
+                                } else {
+                                    format!("{original_file_name:<max_filename_length$}")
+                                };
+
                                 let entry_text =
-                                    Span::styled(original_file_name, Style::default().fg(fg_color));
+                                    Span::styled(file_name_display, Style::default().fg(fg_color));
                                 let entry_symbol = match file.trashroot.root_type {
                                     TrashRootType::Home => Span::from("  "),
                                     _ => Span::from("🢅 "),
@@ -965,10 +1053,11 @@ impl App {
                         "Keyboard Shortcuts [Case Sensitive]",
                         dialog_text_style.clone().add_modifier(Modifier::BOLD),
                     ))
-                    .padding(Padding::new(2, 2, 4, 4))
+                    .padding(Padding::new(2, 2, 4, 1))
                     .style(dialog_style.clone());
                 let area = popup_area(area, 60, 40);
 
+                let empty_line = Line::default();
                 let shortcut_style = dialog_text_style.clone().add_modifier(Modifier::BOLD);
                 let dash = Span::from(" - ");
                 let desc_style = dialog_text_style.clone().add_modifier(Modifier::ITALIC);
@@ -1043,6 +1132,13 @@ impl App {
                             desc_style,
                         ),
                     ]),
+                    empty_line.clone(),
+                    empty_line.clone(),
+                    Line::from(vec![Span::styled(
+                        "https://github.com/chamilad/trash-rs",
+                        shortcut_style,
+                    )]),
+                    // todo: version
                 ])
                 .wrap(Wrap { trim: false })
                 .block(block);
@@ -1063,9 +1159,7 @@ impl App {
         let footer_block = Block::default()
             .borders(Borders::ALL)
             .style(block_style.clone());
-
         let directions_block = Paragraph::new(directions).block(footer_block);
-
         f.render_widget(directions_block, main_horizontal_blocks[2]);
     }
 
@@ -1121,10 +1215,12 @@ impl App {
                     self.state = AppState::SortListDialog(self.sort_type);
                 }
                 KeyCode::Char('g') | KeyCode::PageUp => {
+                    // go to absolute top
                     self.selected = 0;
                     self.scroll_offset = 0;
                 }
                 KeyCode::Char('G') | KeyCode::PageDown => {
+                    // go to absolute bottom
                     self.selected = self.trashed_files.len() - 1;
                     self.scroll_offset = self.selected - self.max_visible_items + 1;
                 }
@@ -1144,23 +1240,23 @@ impl App {
                     | KeyCode::Char('l')
                     | KeyCode::Char('h')
                     | KeyCode::Tab => {
-                        // Toggle between Yes (0) and No (1)
+                        // toggle between Yes (0) and No (1)
                         if let AppState::RestoreConfirmation(choice) = &mut self.state {
                             *choice = if *choice == 0 { 1 } else { 0 };
                         }
                     }
                     KeyCode::Enter => {
-                        // Confirm the action if Yes is selected
+                        // confirm the action if Yes is selected
                         if choice == 0 {
                             let selected_file = &self.trashed_files[self.selected];
                             let _ = selected_file.restore().expect("could not restore file");
                         }
 
-                        // Refresh and return to file list after action or cancel
+                        // refresh and return to file list after action or cancel
                         self.state = AppState::RefreshFileList;
                     }
                     KeyCode::Esc | KeyCode::Char('q') => {
-                        // Close the dialog without performing any action
+                        // close the dialog without performing any action
                         self.state = AppState::RefreshFileList;
                     }
                     _ => {}
@@ -1174,13 +1270,13 @@ impl App {
                     | KeyCode::Char('l')
                     | KeyCode::Char('h')
                     | KeyCode::Tab => {
-                        // Toggle between Yes (0) and No (1)
+                        // toggle between Yes (0) and No (1)
                         if let AppState::DeletionConfirmation(choice) = &mut self.state {
                             *choice = if *choice == 0 { 1 } else { 0 };
                         }
                     }
                     KeyCode::Enter => {
-                        // Confirm the action if Yes is selected
+                        // confirm the action if Yes is selected
                         if choice == 0 {
                             let selected_file = &self.trashed_files[self.selected];
                             let _ = selected_file
@@ -1188,11 +1284,11 @@ impl App {
                                 .expect("could not delete file");
                         }
 
-                        // Refresh and return to file list after action or cancel
+                        // refresh and return to file list after action or cancel
                         self.state = AppState::RefreshFileList;
                     }
                     KeyCode::Esc | KeyCode::Char('q') => {
-                        // Close the dialog without performing any action
+                        // close the dialog without performing any action
                         self.state = AppState::RefreshFileList;
                     }
                     _ => {}
@@ -1206,13 +1302,13 @@ impl App {
                     | KeyCode::Char('l')
                     | KeyCode::Char('h')
                     | KeyCode::Tab => {
-                        // Toggle between Yes (0) and No (1)
+                        // toggle between Yes (0) and No (1)
                         if let AppState::DeletionConfirmation(choice) = &mut self.state {
                             *choice = if *choice == 0 { 1 } else { 0 };
                         }
                     }
                     KeyCode::Enter => {
-                        // Confirm the action if Yes is selected
+                        // confirm the action if Yes is selected
                         if choice == 0 {
                             for trash_file in &self.trashed_files {
                                 // one error shouldn't stop operation
@@ -1223,11 +1319,11 @@ impl App {
                             }
                         }
 
-                        // Refresh and return to file list after action or cancel
+                        // refresh and return to file list after action or cancel
                         self.state = AppState::RefreshFileList;
                     }
                     KeyCode::Esc | KeyCode::Char('q') => {
-                        // Close the dialog without performing any action
+                        // close the dialog without performing any action
                         self.state = AppState::RefreshFileList;
                     }
                     _ => {}
@@ -1237,7 +1333,7 @@ impl App {
             AppState::HelpScreen => {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {
-                        // Close the dialog without performing any action
+                        // close the dialog without performing any action
                         self.state = AppState::RefreshFileList;
                     }
                     _ => {}
@@ -1280,9 +1376,10 @@ impl App {
         }
     }
 
+    // select color based on the current theme
     fn get_color(&self, color: ThemeColor) -> Color {
-        if self.theme == Theme::Dark {
-            match color {
+        match self.theme {
+            Theme::Dark => match color {
                 ThemeColor::Highlight => Color::White,
                 ThemeColor::TitleText => Color::Black,
                 ThemeColor::Text => Color::Gray,
@@ -1297,12 +1394,10 @@ impl App {
                 ThemeColor::UnselectedFGFile => Color::White,
                 ThemeColor::DialogBG => Color::Gray,
                 ThemeColor::DialogText => Color::Black,
-                // ThemeColor::DialogBoldText => Color::Black,
                 ThemeColor::DialogButtonBG => Color::Black,
                 ThemeColor::DialogButtonText => Color::White,
-            }
-        } else {
-            match color {
+            },
+            Theme::Light => match color {
                 ThemeColor::Highlight => Color::DarkGray,
                 ThemeColor::TitleText => Color::White,
                 ThemeColor::Text => Color::DarkGray,
@@ -1317,10 +1412,9 @@ impl App {
                 ThemeColor::UnselectedFGFile => Color::Black,
                 ThemeColor::DialogBG => Color::DarkGray,
                 ThemeColor::DialogText => Color::White,
-                // ThemeColor::DialogBoldText => Color::Black,
                 ThemeColor::DialogButtonBG => Color::White,
                 ThemeColor::DialogButtonText => Color::Black,
-            }
+            },
         }
     }
 }
@@ -1334,7 +1428,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         Err(_) => Theme::Dark,
     };
 
-    // Setup terminal
     enable_raw_mode()?;
     let mut stderr = io::stderr();
     execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
@@ -1360,10 +1453,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         terminal.draw(|f| app.render(f))?;
 
-        // Handle input events
         if let Event::Key(key) = event::read()? {
+            // ratatui records press and release
             if key.kind == event::KeyEventKind::Release {
-                // Skip events that are not KeyEventKind::Press
                 continue;
             }
 
@@ -1383,6 +1475,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// collect trashed files from home mount and other devices mounted as readable
 fn get_trashed_files() -> Result<Vec<TrashFile>, Box<dyn Error>> {
     // get user trash directory
     let user_home = get_home_dir().expect("couldn't get user home directory");
@@ -1402,6 +1495,13 @@ fn get_trashed_files() -> Result<Vec<TrashFile>, Box<dyn Error>> {
     Ok(files)
 }
 
+// sort a given vector of files based on the sort type
+//
+// opinionated on the order,
+// date latest>oldest
+// root dev_id
+// size largest>smallest
+// filename a-z
 fn sort_file_list(list: &mut Vec<TrashFile>, sort_by: &SortType) {
     list.sort_by(|a, b| match sort_by {
         SortType::DeletionDate => {
