@@ -205,6 +205,47 @@ impl TrashDirectory {
         ))
     }
 
+    // get this trash directory's directorysizes file as a PathBuf
+    // if it doesn't exist as a file or a working symlink, an Error is returned
+    // if there is no existing file or working symlink, this will create an empty file
+    pub fn get_dirsizes_path(&self) -> Result<PathBuf, Box<dyn Error>> {
+        let dir_sizes_file = self.home.join("directorysizes");
+        match dir_sizes_file.try_exists() {
+            Ok(true) => {
+                if !dir_sizes_file.is_file() {
+                    return Err(Box::<dyn Error>::from(format!(
+                        "{} is not a file, not updating directorysizes",
+                        dir_sizes_file.display(),
+                    )));
+                }
+
+                // this will skip updating dirsizes in topdir trash created by admin
+                // (scenario 1). It's easier to keep this behavior consistent than being
+                // dependent on dir permissions that the user will or will not know about
+                if !can_delete_file(&dir_sizes_file) {
+                    return Err(Box::<dyn Error>::from(
+                        "not enough permissions to edit directorysizes",
+                    ));
+                }
+                Ok(dir_sizes_file)
+            }
+            Ok(false) => {
+                if dir_sizes_file.is_symlink() {
+                    return Err(Box::<dyn Error>::from(format!(
+                        "{} is a broken symlink",
+                        dir_sizes_file.display()
+                    )));
+                }
+
+                let mut f = File::create(dir_sizes_file.clone())?;
+                f.write_all(b"")?;
+
+                Ok(dir_sizes_file)
+            }
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
     pub fn add_dirsizes_entry(&self, trash_file: &TrashFile) -> Result<(), Box<dyn Error>> {
         if trash_file.files_entry.is_none() {
             return Err(Box::<dyn Error>::from(
@@ -217,22 +258,7 @@ impl TrashDirectory {
             return Ok(());
         }
 
-        let current_dir_sizes = self.home.join("directorysizes");
-        // this will skip updating dirsizes in topdir trash created by admin
-        // (scenario 1). It's easier to keep this behavior consistent than being
-        // dependent on dir permissions that the user will or will not know about
-        if !can_delete_file(&current_dir_sizes) {
-            return Err(Box::<dyn Error>::from(
-                "not enough permissions to edit directorysizes",
-            ));
-        }
-
-        if current_dir_sizes.exists() && !current_dir_sizes.is_file() {
-            let p = current_dir_sizes.to_str().unwrap();
-            return Err(Box::<dyn Error>::from(format!(
-                "{p} is not a file, not updating directorysizes"
-            )));
-        }
+        let current_dir_sizes = self.get_dirsizes_path()?;
 
         let size = get_dir_size(&trashed_file)?;
         let mtime = match trash_file
@@ -278,7 +304,7 @@ impl TrashDirectory {
 
         // cleanup existing entries if other implementations do not support this
         // part of the spec. If this isn't done, directorysizes keeps on growing
-        let mut existing_content = if current_dir_sizes.exists() {
+        let mut existing_content = if current_dir_sizes.metadata()?.st_size() != 0 {
             let mut existing_content: String = String::new();
             let existing_dir_sizes = read_to_string(current_dir_sizes.to_str().unwrap())?;
             let trash_file_path = trash_file.files_entry.clone().unwrap();
@@ -333,21 +359,9 @@ impl TrashDirectory {
 
     // todo: duplicate logic from the above, maybe an optional trashfile arg
     pub fn cleanup_dirsizes(&self) -> Result<(), Box<dyn Error>> {
-        let current_dir_sizes = self.home.join("directorysizes");
-        // this will skip updating dirsizes in topdir trash created by admin
-        // (scenario 1). It's easier to keep this behavior consistent than being
-        // dependent on dir permissions that the user will or will not know about
-        if !can_delete_file(&current_dir_sizes) {
-            return Err(Box::<dyn Error>::from(
-                "not enough permissions to edit directorysizes",
-            ));
-        }
-
-        if current_dir_sizes.exists() && !current_dir_sizes.is_file() {
-            let p = current_dir_sizes.to_str().unwrap();
-            return Err(Box::<dyn Error>::from(format!(
-                "{p} is not a file, not updating directorysizes"
-            )));
+        let current_dir_sizes = self.get_dirsizes_path()?;
+        if current_dir_sizes.metadata()?.st_size() == 0 {
+            return Ok(());
         }
 
         let mut rng = rand::thread_rng();
@@ -369,29 +383,23 @@ impl TrashDirectory {
 
         // cleanup existing entries if other implementations do not support this
         // part of the spec. If this isn't done, directorysizes keeps on growing
-        let existing_content = if current_dir_sizes.exists() {
-            let mut existing_content: String = String::new();
-            let existing_dir_sizes = read_to_string(current_dir_sizes.to_str().unwrap())?;
-            let entries: Vec<&str> = existing_dir_sizes.lines().collect();
-            for entry in entries {
-                let fields: Vec<&str> = entry.split_whitespace().collect();
-                if fields.len() == 3 {
-                    let f = match decode(fields[2]) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
+        let mut existing_content: String = String::new();
+        let existing_dir_sizes = read_to_string(current_dir_sizes.to_str().unwrap())?;
+        let entries: Vec<&str> = existing_dir_sizes.lines().collect();
+        for entry in entries {
+            let fields: Vec<&str> = entry.split_whitespace().collect();
+            if fields.len() == 3 {
+                let f = match decode(fields[2]) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
 
-                    let f_path = self.files.join(f.into_owned());
-                    if f_path.exists() {
-                        existing_content += &format!("{entry}\n").to_string();
-                    }
+                let f_path = self.files.join(f.into_owned());
+                if f_path.exists() {
+                    existing_content += &format!("{entry}\n").to_string();
                 }
             }
-
-            existing_content
-        } else {
-            String::new()
-        };
+        }
 
         // update with the latest entry
         let mut f = File::create(&target_file_path)?;
@@ -792,6 +800,14 @@ impl TrashFile {
         }
 
         rename(&self.original_file, self.files_entry.as_ref().unwrap())?;
+
+        let is_dir = !self.files_entry.as_ref().unwrap().is_symlink()
+            && self.files_entry.as_ref().unwrap().is_dir();
+        if is_dir {
+            // doesn't matter if this fails
+            let _ = self.trashroot.add_dirsizes_entry(self);
+        }
+
         Ok(self.files_entry.as_ref().unwrap())
     }
 
@@ -802,12 +818,14 @@ impl TrashFile {
 
         let is_dir = !self.files_entry.as_ref().unwrap().is_symlink()
             && self.files_entry.as_ref().unwrap().is_dir();
+
         rename(self.files_entry.as_ref().unwrap(), &self.original_file)?;
         remove_file(&self.trashinfo.as_ref().unwrap().path)?;
 
         // if dir, remvoe from dir sizes
         if is_dir {
-            self.trashroot.cleanup_dirsizes()?;
+            // doesn't matter if this fails
+            let _ = self.trashroot.cleanup_dirsizes();
         }
 
         Ok(&self.original_file)

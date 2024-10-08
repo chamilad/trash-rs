@@ -143,12 +143,6 @@ fn main() {
                 std::process::exit(EXITCODE_UNSUPPORTED);
             }
         }
-
-        if let Err(e) = trash_dir.add_dirsizes_entry(&trash_file) {
-            if args_conf.verbose {
-                msg_err(format!("error while updating directorysizes: {e}"));
-            }
-        }
     }
 }
 
