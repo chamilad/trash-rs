@@ -11,7 +11,7 @@ crossterm = "0.28.1"
 libc = "0.2.153"
 log = "0.4.21"
 rand = "0.8.5"
-ratatui = "0.28.1"
+ratatui = { version = "0.28.1" }
 urlencoding = "2.1.3"
 
 [profile.release]

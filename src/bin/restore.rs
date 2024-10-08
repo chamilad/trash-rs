@@ -20,14 +20,17 @@ use ratatui::widgets::{
 };
 use ratatui::{restore, Frame, Terminal};
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::MAIN_SEPARATOR_STR;
 use std::str::from_utf8;
+use std::{env, usize};
 
 const VERBOSE_MODE: bool = false;
+const BINARY_NAME: &str = "Trash Bin";
+const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+// layout values
 const LAYOUT_FILE_LIST_WIDTH_PERCENTAGE: u16 = 70;
 const LAYOUT_PREVIEW_HEIGHT_PERCENTAGE: u16 = 70;
 const LAYOUT_TITLE_HEIGHT: u16 = 3;
@@ -146,7 +149,7 @@ impl App {
         let title_block = Block::default().borders(Borders::ALL).style(block_style);
 
         let frame_area = f.area();
-        let title = " Trash Bin";
+        let title = format!(" {BINARY_NAME}");
         let padded_title = format!("{title:<width$}", width = frame_area.width as usize);
         let title = Paragraph::new(Text::styled(padded_title, title_style)).block(title_block);
         f.render_widget(title, main_horizontal_blocks[0]);
@@ -1036,19 +1039,43 @@ impl App {
                 let area = f.area();
                 let block = Block::bordered()
                     .title(Span::styled(
-                        "Keyboard Shortcuts [Case Sensitive]",
+                        "Help",
                         dialog_text_style.add_modifier(Modifier::BOLD),
                     ))
-                    .padding(Padding::new(2, 2, 4, 1))
+                    .padding(Padding::new(2, 2, 2, 1))
                     .style(dialog_style);
-                let area = popup_area(area, 60, 40);
 
                 let empty_line = Line::default();
                 let shortcut_style = dialog_text_style.add_modifier(Modifier::BOLD);
                 let dash = Span::from(" - ");
                 let desc_style = dialog_text_style.add_modifier(Modifier::ITALIC);
 
-                let shortcuts = Paragraph::new(vec![
+                let shortcuts_list = vec![
+                    Line::from(format!("{BINARY_NAME} is a freedesktop.org Trash Specification implementation written in Rust. Current version is {BINARY_VERSION}.")),
+                    Line::from(format!("{BINARY_NAME} is an Open Source tool licensed under Apache License v2.")),
+                    empty_line.clone(),
+                    Line::from("http://www.apache.org/licenses/LICENSE-2.0"),
+                    empty_line.clone(),
+                    Line::styled("Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.", desc_style),
+                    empty_line.clone(),
+                    Line::from(vec![Span::from("Please report any issues to "),
+                        Span::styled(
+                        "https://github.com/chamilad/trash-rs",
+                        shortcut_style,
+                    )]),
+                    empty_line.clone(),
+                    empty_line.clone(),
+                    Line::from(vec![
+                        Span::styled(
+                        "Keyboard Shortcuts [Case Sensitive]",
+                        shortcut_style,
+                    )]),
+                    Line::from(vec![
+                        Span::styled(
+                        "-----------------------------------",
+                        shortcut_style,
+                    )]),
+                    empty_line.clone(),
                     Line::from(vec![
                         Span::styled("↓↑/jk        ", shortcut_style),
                         dash.clone(),
@@ -1118,17 +1145,13 @@ impl App {
                             desc_style,
                         ),
                     ]),
-                    empty_line.clone(),
-                    empty_line.clone(),
-                    Line::from(vec![Span::styled(
-                        "https://github.com/chamilad/trash-rs",
-                        shortcut_style,
-                    )]),
-                    // todo: version
-                ])
-                .wrap(Wrap { trim: false })
-                .block(block);
+                ];
 
+                let shortcuts = Paragraph::new(shortcuts_list)
+                    .wrap(Wrap { trim: false })
+                    .block(block);
+
+                let area = popup_area(area, 60, 60);
                 f.render_widget(Clear, area);
                 f.render_widget(shortcuts, area);
 
