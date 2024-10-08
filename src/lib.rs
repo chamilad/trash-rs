@@ -9,6 +9,7 @@ use std::fs::{
 };
 use std::io::Write;
 use std::os::linux::fs::MetadataExt;
+use std::path::MAIN_SEPARATOR_STR;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -1146,7 +1147,16 @@ pub fn to_abs_path(path: impl AsRef<Path>) -> Result<PathBuf, Box<dyn Error>> {
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        env::current_dir()?.join(path)
+        // ex: if starts with ./, remove it because that looks ugly
+        let rel_indicator = format!(".{MAIN_SEPARATOR_STR}");
+        let trimmed_path = if path.starts_with(&rel_indicator) {
+            let t = path.display().to_string();
+            &PathBuf::from(t.strip_prefix(&rel_indicator).unwrap())
+        } else {
+            path
+        };
+
+        env::current_dir()?.join(trimmed_path)
     };
 
     Ok(abs_path)
