@@ -4,7 +4,8 @@ use std::env;
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::{
-    create_dir, read_dir, read_to_string, remove_dir_all, remove_file, rename, File, OpenOptions,
+    create_dir_all, read_dir, read_to_string, remove_dir_all, remove_file, rename, File,
+    OpenOptions,
 };
 use std::io::Write;
 use std::os::linux::fs::MetadataExt;
@@ -16,7 +17,7 @@ use urlencoding::{decode, encode};
 // Does NOT support trashing files from external mounts to user's trash dir
 // Does NOT trash a file from external mounts to home if topdirs cannot be used
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum TrashRootType {
     Home,        // trash directory is in user's home directory
     TopDirAdmin, // trash directory is the .Trash/{euid} directory in the top directory for the mount the file exists in
@@ -54,6 +55,7 @@ impl TrashDirectory {
     }
 
     // derive trash directory according to trash spec
+    // does not traverse symlinks
     // todo: support expunge dir (not sure how to schedule job for permanent deletion)
     pub fn resolve_for_file(
         abs_file_path: &Path,
@@ -66,10 +68,20 @@ impl TrashDirectory {
         // check if the file is in a home mount
         // "To be more precise, from a partition/device different from the one on which $XDG_DATA_HOME resides"
         let xdg_data_home = get_xdg_data_home()?;
+        must_have_dir(&xdg_data_home)?;
+        if verbose {
+            msg("deriving file device");
+        }
         let mut file_dev = Device::for_path(abs_file_path)?;
         let xdg_data_home_dev = Device::for_path(&xdg_data_home)?;
         let trash_root_type: TrashRootType;
 
+        if verbose {
+            msg(format!(
+                "devices: {} == {}",
+                file_dev.dev_num.dev_id, xdg_data_home_dev.dev_num.dev_id
+            ));
+        }
         let trash_home = if file_dev.dev_num.dev_id == xdg_data_home_dev.dev_num.dev_id {
             // For every user a “home trash” directory MUST be available. Its
             // name and location are $XDG_DATA_HOME/Trash
@@ -94,7 +106,7 @@ impl TrashDirectory {
                 euid = libc::geteuid();
             }
 
-            match Self::try_topdir_admin_trash(&top_dir.clone(), euid, true) {
+            match Self::try_topdir_admin_trash_for(&top_dir.clone(), euid, true) {
                 Ok(v) => {
                     trash_root_type = TrashRootType::TopDirAdmin;
                     v
@@ -111,12 +123,16 @@ impl TrashDirectory {
 
                     msg_err(format!("top directory trash for file is unusable: {e}"));
 
-                    let top_dir_user_trash = Self::try_topdir_user_trash(&top_dir, euid, true)?;
+                    let top_dir_user_trash = Self::try_topdir_user_trash_for(&top_dir, euid, true)?;
                     trash_root_type = TrashRootType::TopDirUser;
                     top_dir_user_trash
                 }
             }
         };
+
+        if verbose {
+            msg(format!("root type: {:#?}", trash_root_type));
+        }
 
         let files_dir = trash_home.join("files");
         must_have_dir(&files_dir)?;
@@ -124,15 +140,13 @@ impl TrashDirectory {
         let info_dir = trash_home.join("info");
         must_have_dir(&info_dir)?;
 
-        let trash_dir = TrashDirectory {
+        Ok(TrashDirectory {
             device: file_dev,
             root_type: trash_root_type,
             home: trash_home,
             files: files_dir,
             info: info_dir,
-        };
-
-        Ok(trash_dir)
+        })
     }
 
     pub fn generate_trash_entry_names(
@@ -432,14 +446,14 @@ impl TrashDirectory {
                 euid = libc::geteuid();
             }
 
-            match TrashDirectory::topdir_admin_trash_exists(&mount_path, euid) {
+            match TrashDirectory::topdir_admin_trash_exists_for(&mount_path, euid) {
                 Ok(v) => {
                     let abs_path = to_abs_path(&mount_path)?;
                     let dev = Device::for_path(&abs_path)?;
                     let trash_dir = TrashDirectory::from(v, dev, TrashRootType::TopDirAdmin)?;
                     trash_roots.push(trash_dir);
                 }
-                Err(_) => match TrashDirectory::topdir_user_trash_exists(&mount_path, euid) {
+                Err(_) => match TrashDirectory::topdir_user_trash_exists_for(&mount_path, euid) {
                     Ok(v) => {
                         let abs_path = to_abs_path(&mount_path)?;
                         let dev = Device::for_path(&abs_path)?;
@@ -475,14 +489,14 @@ impl TrashDirectory {
         format!("{}.{}", stripped_file_name, idx)
     }
 
-    pub fn topdir_admin_trash_exists(
+    pub fn topdir_admin_trash_exists_for(
         top_dir: &Path,
         euid: libc::uid_t,
     ) -> Result<PathBuf, Box<dyn Error>> {
-        TrashDirectory::try_topdir_admin_trash(top_dir, euid, false)
+        TrashDirectory::try_topdir_admin_trash_for(top_dir, euid, false)
     }
 
-    pub fn try_topdir_admin_trash(
+    pub fn try_topdir_admin_trash_for(
         top_dir: &Path,
         euid: libc::uid_t,
         create_if_not_exist: bool,
@@ -553,14 +567,14 @@ impl TrashDirectory {
         }
     }
 
-    pub fn topdir_user_trash_exists(
+    pub fn topdir_user_trash_exists_for(
         top_dir: &Path,
         euid: libc::uid_t,
     ) -> Result<PathBuf, Box<dyn Error>> {
-        TrashDirectory::try_topdir_user_trash(top_dir, euid, false)
+        TrashDirectory::try_topdir_user_trash_for(top_dir, euid, false)
     }
 
-    pub fn try_topdir_user_trash(
+    pub fn try_topdir_user_trash_for(
         top_dir: &Path,
         euid: libc::uid_t,
         create_if_not_exist: bool,
@@ -705,9 +719,10 @@ DeletionDate={}
         // assume user/machine local tz
         let now = Local::now();
         let diff_mins: i32 = now.offset().local_minus_utc() / 60;
-        let diff_hours: i32 = diff_mins / 60; // floor result
+        let diff_hours: i32 = diff_mins / 60;
         let diff_mins_remaining = diff_mins % 60;
-        let deletion_datetime = format!("{deletion_date}+{diff_hours}:{diff_mins_remaining:02}");
+        let deletion_datetime = format!("{deletion_date}+{diff_hours:02}:{diff_mins_remaining:02}");
+        // println!("diff_mins: {diff_mins}, diff_hours: {diff_hours}, diff_mins_rem: {diff_mins_remaining}, date: {deletion_datetime}");
 
         deletion_datetime.parse().unwrap()
     }
@@ -901,7 +916,9 @@ pub fn is_writable_dir(path: &Path) -> bool {
 }
 
 // make sure the specified path exists as a directory.
-// if the path doesn't exist, the directory is created.
+// if the path doesn't exist, the directory is created, including the parent
+// paths.
+// if parent paths cannot be created, an error is returned
 // if it exists and is not a directory, an Error is returned
 pub fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
     match path.try_exists() {
@@ -914,7 +931,7 @@ pub fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
             }
         }
         Ok(false) => {
-            return create_dir(path).map_err(|e| {
+            return create_dir_all(path).map_err(|e| {
                 Box::<dyn Error>::from(format!(
                     "cannot create directory: {}, {}",
                     path.to_str().unwrap(),
@@ -943,9 +960,11 @@ pub fn get_path_relative_to(child: &Path, parent: &PathBuf) -> Result<PathBuf, B
     Ok(stripped.to_path_buf())
 }
 
-pub fn can_delete_file(file_path: &Path) -> bool {
+// check permissions for a file/directory to be deleted without dereferencing if a symlink
+// if absolute file path is not provided, treated as relative to the current working directory
+pub fn can_delete_file(abs_file_path: &Path) -> bool {
     // 1. can delete? - user needs to have rwx for the parent dir
-    let parent = match file_path.parent() {
+    let parent = match abs_file_path.parent() {
         Some(v) => v,
         None => return false,
     };
@@ -956,13 +975,18 @@ pub fn can_delete_file(file_path: &Path) -> bool {
 
     // 1. can read and modify?
     let file_writable: libc::c_int;
-    let location = file_path.to_str().unwrap();
+    let location = abs_file_path.to_str().unwrap();
     let path_cstr = match CString::new(location) {
         Ok(v) => v,
         Err(_) => return false,
     };
     unsafe {
-        file_writable = libc::access(path_cstr.as_ptr(), libc::R_OK | libc::W_OK);
+        file_writable = libc::faccessat(
+            libc::AT_FDCWD, // relative to cwd
+            path_cstr.as_ptr(),
+            libc::R_OK | libc::W_OK,
+            libc::AT_SYMLINK_NOFOLLOW, // do not dereference symlinks
+        );
     }
 
     if file_writable != 0 {
@@ -1016,6 +1040,7 @@ impl Device {
     const PROCINFO_FIELD_MOUNT_POINT: usize = 4;
     const PROCINFO_FIELD_DEV_NAME: usize = 9;
 
+    // does not traverse symlinks
     pub fn for_path(abs_file_path: &Path) -> Result<Device, Box<dyn Error>> {
         let dev_id = DeviceNumber::for_path(abs_file_path)?;
         Ok(Device {
@@ -1060,6 +1085,7 @@ pub struct DeviceNumber {
 }
 
 impl DeviceNumber {
+    // does not traverse symlinks
     // latest device drivers ref - Ch3
     // Within the kernel, the dev_t type (defined in <linux/types.h>) is used to hold device
     // numbers—both the major and minor parts. As of Version 2.6.0 of the kernel, dev_t is
@@ -1067,7 +1093,12 @@ impl DeviceNumber {
     // number. Your code should, of course, never make any assumptions about the inter-
     // nal organization of device numbers;
     pub fn for_path(abs_file_path: &Path) -> Result<DeviceNumber, Box<dyn Error>> {
-        let f_metadata = abs_file_path.metadata()?;
+        let f_metadata = if abs_file_path.is_symlink() {
+            abs_file_path.symlink_metadata()?
+        } else {
+            abs_file_path.metadata()?
+        };
+
         let file_device_id = f_metadata.st_dev();
 
         let major: u32;
@@ -1088,7 +1119,9 @@ impl DeviceNumber {
     }
 }
 
-// convert a file path to absolute path without traversing symlinks
+// convert a file path to absolute path WITHOUT Traversing symlinks
+// does not check if path exists
+// errors - from current_dir() call
 // todo: test, shamelessly stolen from so
 pub fn to_abs_path(path: impl AsRef<Path>) -> Result<PathBuf, Box<dyn Error>> {
     let path = path.as_ref();

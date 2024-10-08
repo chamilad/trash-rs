@@ -174,6 +174,9 @@ impl App {
                 // if empty bin, show kitty
                 if total_item_count == 0 {
                     let empty_note = r#"
+
+
+
           |\      _,,,---,,_
     ZZZzz /,`.-'`'    -.  ;-;;,_
          |,4-  ) )-,_. ,\ (  `'-'
@@ -712,9 +715,7 @@ impl App {
                     .borders(Borders::ALL)
                     .style(block_style)
                     .padding(Padding::new(1, 1, 1, 1));
-                let preview_text = Paragraph::new(preview)
-                    .wrap(Wrap { trim: true })
-                    .block(preview_block);
+                let preview_text = Paragraph::new(preview).block(preview_block);
 
                 f.render_widget(preview_text, right_column_chunks[1]);
 

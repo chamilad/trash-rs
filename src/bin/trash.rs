@@ -41,11 +41,22 @@ fn main() {
             Ok(v) => v,
             Err(_) => {
                 msg_err(format!(
+                    "cannot trash '{file_name}': cannot determine file path"
+                ));
+                std::process::exit(EXITCODE_EXTERNAL);
+            }
+        };
+
+        if let Ok(false) = abs_file.try_exists() {
+            // try_exists traverses links and returns false if target doesn't exist
+            // if the link exists but the target doesn't, still should trash the link
+            if !abs_file.is_symlink() {
+                msg_err(format!(
                     "cannot trash '{file_name}': no such file or directory"
                 ));
                 std::process::exit(EXITCODE_INVALID_ARGS);
             }
-        };
+        }
 
         // When trashing a file or directory, the implementation SHOULD
         // check whether the user has the necessary permissions to delete it,
