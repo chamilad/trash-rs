@@ -13,8 +13,6 @@ use std::time::SystemTime;
 
 use urlencoding::{decode, encode};
 
-use libc;
-
 // Does NOT support trashing files from external mounts to user's trash dir
 // Does NOT trash a file from external mounts to home if topdirs cannot be used
 
@@ -58,7 +56,7 @@ impl TrashDirectory {
     // derive trash directory according to trash spec
     // todo: support expunge dir (not sure how to schedule job for permanent deletion)
     pub fn resolve_for_file(
-        abs_file_path: &PathBuf,
+        abs_file_path: &Path,
         verbose: bool,
     ) -> Result<TrashDirectory, Box<dyn Error>> {
         if verbose {
@@ -96,7 +94,7 @@ impl TrashDirectory {
                 euid = libc::geteuid();
             }
 
-            let trash_home = match Self::try_topdir_admin_trash(&top_dir.clone(), euid, true) {
+            match Self::try_topdir_admin_trash(&top_dir.clone(), euid, true) {
                 Ok(v) => {
                     trash_root_type = TrashRootType::TopDirAdmin;
                     v
@@ -110,15 +108,14 @@ impl TrashDirectory {
                     // Besides, the implementation SHOULD report the failed
                     // check to the administrator, and MAY also report it to
                     // the user.
+
                     msg_err(format!("top directory trash for file is unusable: {e}"));
 
                     let top_dir_user_trash = Self::try_topdir_user_trash(&top_dir, euid, true)?;
                     trash_root_type = TrashRootType::TopDirUser;
                     top_dir_user_trash
                 }
-            };
-
-            trash_home
+            }
         };
 
         let files_dir = trash_home.join("files");
@@ -176,7 +173,7 @@ impl TrashDirectory {
                     _ => {
                         let trash_home_mt_point = self.device.mount_point.as_ref().unwrap();
                         relative_path =
-                            get_path_relative_to(&trash_file.original_file, &trash_home_mt_point)?;
+                            get_path_relative_to(&trash_file.original_file, trash_home_mt_point)?;
                         relative_path.to_str().unwrap()
                     }
                 };
@@ -189,9 +186,9 @@ impl TrashDirectory {
             }
         }
 
-        return Err(Box::<dyn Error>::from(
+        Err(Box::<dyn Error>::from(
             "reached maximum trash file name iteration",
-        ));
+        ))
     }
 
     pub fn add_dirsizes_entry(&self, trash_file: &TrashFile) -> Result<(), Box<dyn Error>> {
@@ -269,7 +266,7 @@ impl TrashDirectory {
         // part of the spec. If this isn't done, directorysizes keeps on growing
         let mut existing_content = if current_dir_sizes.exists() {
             let mut existing_content: String = String::new();
-            let existing_dir_sizes = read_to_string(&current_dir_sizes.to_str().unwrap())?;
+            let existing_dir_sizes = read_to_string(current_dir_sizes.to_str().unwrap())?;
             let trash_file_path = trash_file.files_entry.clone().unwrap();
             let trash_file_name = trash_file_path.file_name().unwrap().to_str().unwrap();
             let entries: Vec<&str> = existing_dir_sizes.lines().collect();
@@ -360,7 +357,7 @@ impl TrashDirectory {
         // part of the spec. If this isn't done, directorysizes keeps on growing
         let existing_content = if current_dir_sizes.exists() {
             let mut existing_content: String = String::new();
-            let existing_dir_sizes = read_to_string(&current_dir_sizes.to_str().unwrap())?;
+            let existing_dir_sizes = read_to_string(current_dir_sizes.to_str().unwrap())?;
             let entries: Vec<&str> = existing_dir_sizes.lines().collect();
             for entry in entries {
                 let fields: Vec<&str> = entry.split_whitespace().collect();
@@ -400,7 +397,7 @@ impl TrashDirectory {
         for child in read_dir(files_dir)? {
             let child = child?;
             let child_path = child.path();
-            let trash_entry = TrashFile::from(child_path, &self)?;
+            let trash_entry = TrashFile::from(child_path, self)?;
             files.push(trash_entry);
         }
 
@@ -479,14 +476,14 @@ impl TrashDirectory {
     }
 
     pub fn topdir_admin_trash_exists(
-        top_dir: &PathBuf,
+        top_dir: &Path,
         euid: libc::uid_t,
     ) -> Result<PathBuf, Box<dyn Error>> {
         TrashDirectory::try_topdir_admin_trash(top_dir, euid, false)
     }
 
     pub fn try_topdir_admin_trash(
-        top_dir: &PathBuf,
+        top_dir: &Path,
         euid: libc::uid_t,
         create_if_not_exist: bool,
     ) -> Result<PathBuf, Box<dyn Error>> {
@@ -496,7 +493,7 @@ impl TrashDirectory {
         // in the permissions must be set, if the file system supports it.
         //
         // check if $topdir/.Trash exist and is usable
-        let admin_trash = top_dir.clone().join(".Trash");
+        let admin_trash = top_dir.join(".Trash");
         let admin_trash_location = admin_trash.to_str().unwrap();
         match admin_trash.try_exists() {
             Ok(true) => {
@@ -529,14 +526,13 @@ impl TrashDirectory {
                     let user_trash_home = admin_trash.join(euid.to_string());
                     if create_if_not_exist {
                         must_have_dir(&user_trash_home)?;
-                    } else {
-                        if !dir_exists(&user_trash_home) {
-                            return Err(Box::<dyn Error>::from(format!(
-                                "user directory in top directory trash '{}' isn't writable",
-                                user_trash_home.display(),
-                            )));
-                        }
+                    } else if !user_trash_home.try_exists().unwrap_or(false) {
+                        return Err(Box::<dyn Error>::from(format!(
+                            "user directory in top directory trash '{}' isn't writable",
+                            user_trash_home.display(),
+                        )));
                     }
+
                     if !is_writable_dir(&user_trash_home) {
                         let user_trash_location = user_trash_home.to_str().unwrap();
                         return Err(Box::<dyn Error>::from(format!(
@@ -558,14 +554,14 @@ impl TrashDirectory {
     }
 
     pub fn topdir_user_trash_exists(
-        top_dir: &PathBuf,
+        top_dir: &Path,
         euid: libc::uid_t,
     ) -> Result<PathBuf, Box<dyn Error>> {
         TrashDirectory::try_topdir_user_trash(top_dir, euid, false)
     }
 
     pub fn try_topdir_user_trash(
-        top_dir: &PathBuf,
+        top_dir: &Path,
         euid: libc::uid_t,
         create_if_not_exist: bool,
     ) -> Result<PathBuf, Box<dyn Error>> {
@@ -578,16 +574,14 @@ impl TrashDirectory {
         //
         // $topdir/.Trash-uid
         let user_trash_name = format!(".Trash-{}", euid);
-        let user_trash_home = top_dir.clone().join(user_trash_name);
+        let user_trash_home = top_dir.join(user_trash_name);
         if create_if_not_exist {
             must_have_dir(&user_trash_home)?;
-        } else {
-            if !dir_exists(&user_trash_home) {
-                return Err(Box::<dyn Error>::from(format!(
-                    "user directory in top directory trash '{}' isn't writable",
-                    user_trash_home.display(),
-                )));
-            }
+        } else if !user_trash_home.try_exists().unwrap_or(false) {
+            return Err(Box::<dyn Error>::from(format!(
+                "user directory in top directory trash '{}' isn't writable",
+                user_trash_home.display(),
+            )));
         }
 
         if !is_writable_dir(&user_trash_home) {
@@ -620,7 +614,7 @@ impl TrashInfo {
         let mut deletion_date_fmt =
             deletion_date.to_rfc3339_opts(chrono::format::SecondsFormat::Secs, true);
         // drop everything after + or Z
-        for offset_char in vec!["+", "z", "Z"] {
+        for offset_char in ["+", "z", "Z"] {
             let tz_offset = deletion_date_fmt
                 .find(offset_char)
                 .unwrap_or(deletion_date_fmt.len());
@@ -701,7 +695,7 @@ DeletionDate={}
         // sometimes deletion date has tz info because of a bug from a previous commit
         // drop everything after + or Z
         let mut deletion_date = self.deletion_date.clone();
-        for offset_char in vec!["+", "z", "Z"] {
+        for offset_char in ["+", "z", "Z"] {
             let tz_offset = deletion_date
                 .find(offset_char)
                 .unwrap_or(deletion_date.len());
@@ -710,11 +704,10 @@ DeletionDate={}
 
         // assume user/machine local tz
         let now = Local::now();
-        let diff_mins = now.offset().local_minus_utc() / 60;
-        let diff_hours = diff_mins as i32 / 60 as i32; // floor result
+        let diff_mins: i32 = now.offset().local_minus_utc() / 60;
+        let diff_hours: i32 = diff_mins / 60; // floor result
         let diff_mins_remaining = diff_mins % 60;
         let deletion_datetime = format!("{deletion_date}+{diff_hours}:{diff_mins_remaining:02}");
-        // println!("date: {}", deletion_datetime);
 
         deletion_datetime.parse().unwrap()
     }
@@ -771,30 +764,30 @@ impl TrashFile {
     }
 
     pub fn create_trashinfo(&self) -> Result<&PathBuf, Box<dyn Error>> {
-        if self.files_entry == None || self.trashinfo == None {
+        if self.files_entry.is_none() || self.trashinfo.is_none() {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
 
-        Ok(self.trashinfo.as_ref().unwrap().create_file()?)
+        self.trashinfo.as_ref().unwrap().create_file()
     }
 
     pub fn trash(&self) -> Result<&PathBuf, Box<dyn Error>> {
-        if self.files_entry == None || self.trashinfo == None {
+        if self.files_entry.is_none() || self.trashinfo.is_none() {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
 
         rename(&self.original_file, self.files_entry.as_ref().unwrap())?;
-        Ok(&self.files_entry.as_ref().unwrap())
+        Ok(self.files_entry.as_ref().unwrap())
     }
 
     pub fn restore(&self) -> Result<&PathBuf, Box<dyn Error>> {
-        if self.files_entry == None || self.trashinfo == None {
+        if self.files_entry.is_none() || self.trashinfo.is_none() {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
 
         let is_dir = !self.files_entry.as_ref().unwrap().is_symlink()
             && self.files_entry.as_ref().unwrap().is_dir();
-        rename(&self.files_entry.as_ref().unwrap(), &self.original_file)?;
+        rename(self.files_entry.as_ref().unwrap(), &self.original_file)?;
         remove_file(&self.trashinfo.as_ref().unwrap().path)?;
 
         // if dir, remvoe from dir sizes
@@ -806,7 +799,7 @@ impl TrashFile {
     }
 
     pub fn delete_forever(&self) -> Result<(), Box<dyn Error>> {
-        if self.files_entry == None || self.trashinfo == None {
+        if self.files_entry.is_none() || self.trashinfo.is_none() {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
 
@@ -814,9 +807,9 @@ impl TrashFile {
             && self.files_entry.as_ref().unwrap().is_dir();
 
         if is_dir {
-            remove_dir_all(&self.files_entry.as_ref().unwrap())?;
+            remove_dir_all(self.files_entry.as_ref().unwrap())?;
         } else {
-            remove_file(&self.files_entry.as_ref().unwrap())?;
+            remove_file(self.files_entry.as_ref().unwrap())?;
         }
 
         remove_file(&self.trashinfo.as_ref().unwrap().path)?;
@@ -831,7 +824,7 @@ impl TrashFile {
 
     // size in bytes (not the size on disk)
     pub fn get_size(&self) -> Result<u64, Box<dyn Error>> {
-        if self.files_entry == None || self.trashinfo == None {
+        if self.files_entry.is_none() || self.trashinfo.is_none() {
             return Err(Box::<dyn Error>::from("trash entries are uninitialised"));
         }
 
@@ -886,7 +879,7 @@ pub fn get_xdg_data_home() -> Result<PathBuf, Box<dyn Error>> {
 // alternative is to use faccessat() with AT_EACCESS.
 // the decision here is to whether allow sudo invocation to trash a file that
 // a user doesn't have access to
-pub fn is_writable_dir(path: &PathBuf) -> bool {
+pub fn is_writable_dir(path: &Path) -> bool {
     let writable: libc::c_int;
     let dir_location = path.to_str().unwrap();
     let path_cstr = match CString::new(dir_location) {
@@ -905,13 +898,6 @@ pub fn is_writable_dir(path: &PathBuf) -> bool {
     }
 
     true
-}
-
-pub fn dir_exists(path: &PathBuf) -> bool {
-    match path.try_exists() {
-        Ok(v) => v,
-        Err(_) => false,
-    }
 }
 
 // make sure the specified path exists as a directory.
@@ -948,7 +934,7 @@ pub fn must_have_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
 }
 
 // returns a PathBuf of a relative path of child against parent
-pub fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+pub fn get_path_relative_to(child: &Path, parent: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
     if !child.is_absolute() || !parent.is_absolute() {
         return Err(Box::<dyn Error>::from("require absolute paths"));
     }
@@ -957,14 +943,14 @@ pub fn get_path_relative_to(child: &PathBuf, parent: &PathBuf) -> Result<PathBuf
     Ok(stripped.to_path_buf())
 }
 
-pub fn can_delete_file(file_path: &PathBuf) -> bool {
+pub fn can_delete_file(file_path: &Path) -> bool {
     // 1. can delete? - user needs to have rwx for the parent dir
     let parent = match file_path.parent() {
         Some(v) => v,
         None => return false,
     };
 
-    if !is_writable_dir(&parent.to_path_buf()) {
+    if !is_writable_dir(parent) {
         return false;
     }
 
@@ -1030,7 +1016,7 @@ impl Device {
     const PROCINFO_FIELD_MOUNT_POINT: usize = 4;
     const PROCINFO_FIELD_DEV_NAME: usize = 9;
 
-    pub fn for_path(abs_file_path: &PathBuf) -> Result<Device, Box<dyn Error>> {
+    pub fn for_path(abs_file_path: &Path) -> Result<Device, Box<dyn Error>> {
         let dev_id = DeviceNumber::for_path(abs_file_path)?;
         Ok(Device {
             dev_num: dev_id,
@@ -1080,7 +1066,7 @@ impl DeviceNumber {
     // a 32-bit quantity with 12 bits set aside for the major number and 20 for the minor
     // number. Your code should, of course, never make any assumptions about the inter-
     // nal organization of device numbers;
-    pub fn for_path(abs_file_path: &PathBuf) -> Result<DeviceNumber, Box<dyn Error>> {
+    pub fn for_path(abs_file_path: &Path) -> Result<DeviceNumber, Box<dyn Error>> {
         let f_metadata = abs_file_path.metadata()?;
         let file_device_id = f_metadata.st_dev();
 
@@ -1094,8 +1080,8 @@ impl DeviceNumber {
 
         let dev_number = DeviceNumber {
             dev_id: file_device_id,
-            major: major.try_into().unwrap(),
-            minor: minor.try_into().unwrap(),
+            major,
+            minor,
         };
 
         Ok(dev_number)
@@ -1115,7 +1101,7 @@ pub fn to_abs_path(path: impl AsRef<Path>) -> Result<PathBuf, Box<dyn Error>> {
     Ok(abs_path)
 }
 
-pub fn msg_err<T>(msg: T) -> ()
+pub fn msg_err<T>(msg: T)
 where
     T: std::fmt::Display,
 {
@@ -1123,7 +1109,7 @@ where
     eprintln!("{binary_name}: {msg}")
 }
 
-pub fn msg<T>(msg: T) -> ()
+pub fn msg<T>(msg: T)
 where
     T: std::fmt::Display,
 {

@@ -70,7 +70,7 @@ fn main() {
         };
 
         if abs_file.starts_with(&trash_dir.home) {
-            msg_err(format!("trashing the trash is not supported"));
+            msg_err("trashing the trash is not supported");
             std::process::exit(EXITCODE_UNSUPPORTED);
         }
 
@@ -110,7 +110,7 @@ fn main() {
             };
             if confirmation.strip_suffix("\n").unwrap().to_lowercase() != "y" {
                 if args_conf.verbose {
-                    msg_err(format!("not trashing the file"));
+                    msg_err("not trashing the file");
                 }
 
                 std::process::exit(EXITCODE_OK);
@@ -143,7 +143,7 @@ fn main() {
 
 fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
     // need at least one arg
-    if args.len() == 0 {
+    if args.is_empty() {
         return Err(Box::<dyn Error>::from("missing operand"));
     }
 
@@ -178,7 +178,7 @@ fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
         }
     }
 
-    if file_names.len() == 0 && !(help || version) {
+    if file_names.is_empty() && !(help || version) {
         return Err(Box::<dyn Error>::from("missing operand"));
     }
 

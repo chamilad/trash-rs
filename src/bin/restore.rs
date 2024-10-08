@@ -23,7 +23,7 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
-use std::path::{PathBuf, MAIN_SEPARATOR_STR};
+use std::path::MAIN_SEPARATOR_STR;
 use std::str::from_utf8;
 
 const VERBOSE_MODE: bool = false;
@@ -143,15 +143,12 @@ impl App {
             .split(f.area());
 
         // ============================== title
-        let title_block = Block::default()
-            .borders(Borders::ALL)
-            .style(block_style.clone());
+        let title_block = Block::default().borders(Borders::ALL).style(block_style);
 
         let frame_area = f.area();
         let title = " Trash Bin";
         let padded_title = format!("{title:<width$}", width = frame_area.width as usize);
-        let title =
-            Paragraph::new(Text::styled(padded_title, title_style.clone())).block(title_block);
+        let title = Paragraph::new(Text::styled(padded_title, title_style)).block(title_block);
         f.render_widget(title, main_horizontal_blocks[0]);
 
         let mut directions: Line = Line::default();
@@ -183,10 +180,9 @@ impl App {
         '---''(_/--'  `-'\_)
                         "#;
                     let note = Paragraph::new(empty_note).block(
-                        Block::default().borders(Borders::ALL).title(Span::styled(
-                            " Files in Trash [Empty] ",
-                            title_style.clone(),
-                        )),
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(Span::styled(" Files in Trash [Empty] ", title_style)),
                     );
                     f.render_widget(note, midsection_columns[0]);
                 } else {
@@ -255,7 +251,7 @@ impl App {
                                     }
                                     _ => format!(
                                         "{}{}{}",
-                                        file.trashroot.home.parent().unwrap().display().to_string(),
+                                        file.trashroot.home.parent().unwrap().display(),
                                         MAIN_SEPARATOR_STR,
                                         file.original_file.to_str().unwrap()
                                     ),
@@ -348,10 +344,9 @@ impl App {
                                                 ),
                                             ])])
                                         }
-                                        Err(_e) => Text::styled(
-                                            "couldn't read link",
-                                            err_message_style.clone(),
-                                        ),
+                                        Err(_e) => {
+                                            Text::styled("couldn't read link", err_message_style)
+                                        }
                                     }
                                 } else if file.files_entry.as_ref().unwrap().is_dir() {
                                     // show contents up to preview_height
@@ -367,17 +362,17 @@ impl App {
                                     if item_count == 0 {
                                         lines.push(Line::from(vec![Span::styled(
                                             "empty directory",
-                                            message_style.clone(),
+                                            message_style,
                                         )]));
                                     } else {
                                         // show a tree -L 1 output
                                         lines.push(Line::styled(
                                             "directory contents",
-                                            message_style.clone(),
+                                            message_style,
                                         ));
                                         lines.push(Line::from("."));
                                         for (i, entry) in entries.into_iter().enumerate() {
-                                            if i > preview_area_height as usize {
+                                            if i > preview_area_height {
                                                 break;
                                             }
 
@@ -427,7 +422,7 @@ impl App {
                                     Text::from(lines)
                                 } else if file.files_entry.as_ref().unwrap().is_file() {
                                     if file.get_size().ok().unwrap() == 0 {
-                                        Text::styled("empty file", message_style.clone())
+                                        Text::styled("empty file", message_style)
                                     } else {
                                         // check if file is a text readable by
                                         // reading the first line (ending with \n)
@@ -440,25 +435,19 @@ impl App {
                                                 .unwrap();
                                         let mut text_checker_reader = BufReader::new(&prev_file);
                                         let mut text_checker_line = vec![];
-                                        let bytes_read = match text_checker_reader
+                                        let bytes_read = text_checker_reader
                                             .read_until(b'\n', &mut text_checker_line)
-                                        {
-                                            Ok(v) => v,
-                                            Err(_) => 0,
-                                        };
+                                            .unwrap_or(0);
 
                                         if bytes_read == 0 {
-                                            Text::styled(
-                                                "couldn't read file",
-                                                err_message_style.clone(),
-                                            )
+                                            Text::styled("couldn't read file", err_message_style)
                                         } else {
                                             let test_line_read =
                                                 from_utf8(&text_checker_line[..bytes_read]);
                                             if test_line_read.is_err()
                                                 || test_line_read.ok().is_none()
                                             {
-                                                Text::styled("binary file", message_style.clone())
+                                                Text::styled("binary file", message_style)
                                             } else {
                                                 // read at most 15 lines
                                                 let prev_file = File::open(
@@ -472,12 +461,9 @@ impl App {
                                                 for _ in
                                                     1..preview_area_height.min(preview_max_lines)
                                                 {
-                                                    let bytes_read = match prev_reader
+                                                    let bytes_read = prev_reader
                                                         .read_until(b'\n', &mut line_buff)
-                                                    {
-                                                        Ok(v) => v,
-                                                        Err(_) => 0,
-                                                    };
+                                                        .unwrap_or(0);
 
                                                     // EOF
                                                     if bytes_read == 0 {
@@ -513,7 +499,7 @@ impl App {
                                         }
                                     }
                                 } else {
-                                    Text::styled("unknown file type", err_message_style.clone())
+                                    Text::styled("unknown file type", err_message_style)
                                 };
 
                                 // generate list item entry
@@ -589,7 +575,7 @@ impl App {
                                                 width = max_subtitle_length - 2
                                             )
                                         } else {
-                                            format!("{original_path_display}")
+                                            original_path_display
                                         }
                                     }
                                     SortType::Size => format!(
@@ -676,23 +662,22 @@ impl App {
                                     self.selected + 1,
                                     total_item_count,
                                 ),
-                                title_style.clone(),
+                                title_style,
                             ))
                             .title_top(
                                 Line::from(vec![
                                     Span::styled(
                                         " Sorted By ",
-                                        title_style.clone().remove_modifier(Modifier::BOLD),
+                                        title_style.remove_modifier(Modifier::BOLD),
                                     ),
                                     Span::styled(
-                                        format!("{sort_value}").to_string(),
-                                        title_style.clone().add_modifier(Modifier::ITALIC),
+                                        format!("{sort_value} ").to_string(),
+                                        title_style.add_modifier(Modifier::ITALIC),
                                     ),
-                                    Span::styled(" ", title_style.clone()),
                                 ])
                                 .right_aligned(),
                             )
-                            .style(block_style.clone()),
+                            .style(block_style),
                     );
                     f.render_widget(list, midsection_columns[0]);
                 }
@@ -711,9 +696,9 @@ impl App {
 
                 // -------------------- description
                 let desc_block = Block::default()
-                    .title(Span::styled(" Description ", title_style.clone()))
+                    .title(Span::styled(" Description ", title_style))
                     .borders(Borders::ALL)
-                    .style(block_style.clone())
+                    .style(block_style)
                     .padding(Padding::new(1, 1, 1, 1));
                 let desc_text = Paragraph::new(selected_desc)
                     .wrap(Wrap { trim: false })
@@ -723,9 +708,9 @@ impl App {
 
                 // -------------------- preview
                 let preview_block = Block::default()
-                    .title(Span::styled(" Preview ", title_style.clone()))
+                    .title(Span::styled(" Preview ", title_style))
                     .borders(Borders::ALL)
-                    .style(block_style.clone())
+                    .style(block_style)
                     .padding(Padding::new(1, 1, 1, 1));
                 let preview_text = Paragraph::new(preview)
                     .wrap(Wrap { trim: true })
@@ -749,19 +734,19 @@ impl App {
 
                 // -------------------- shortcuts
                 directions = Line::from(vec![
-                    Span::styled("h/f1", title_style.clone()),
+                    Span::styled("h/f1", title_style),
                     Span::styled(" - help ", Style::default()),
-                    Span::styled("↓↑/jk", title_style.clone()),
+                    Span::styled("↓↑/jk", title_style),
                     Span::styled(" - navigate list, ", Style::default()),
-                    Span::styled("enter", title_style.clone()),
+                    Span::styled("enter", title_style),
                     Span::styled(" - restore, ", Style::default()),
-                    Span::styled("del", title_style.clone()),
+                    Span::styled("del", title_style),
                     Span::styled(" - del, ", Style::default()),
-                    Span::styled("shift + del", title_style.clone()),
+                    Span::styled("shift + del", title_style),
                     Span::styled(" - empty trash bin, ", Style::default()),
-                    Span::styled("q", title_style.clone()),
+                    Span::styled("q", title_style),
                     Span::styled(" - quit, ", Style::default()),
-                    Span::styled("s", title_style.clone()),
+                    Span::styled("s", title_style),
                     Span::styled(" - sort", Style::default()),
                 ]);
             }
@@ -781,31 +766,31 @@ impl App {
                                 .to_str()
                                 .unwrap(),
                         ),
-                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                        dialog_text_style.add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("to ", dialog_text_style.clone()),
+                    Span::styled("to ", dialog_text_style),
                     Span::styled(
-                        format!("'{}' ", selected_file.original_file.display().to_string(),),
-                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                        format!("'{}' ", selected_file.original_file.display()),
+                        dialog_text_style.add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("?", dialog_text_style.clone()),
+                    Span::styled("?", dialog_text_style),
                 ]);
 
                 // space between buttons
-                let spacer = Span::styled("      ", dialog_text_style.clone());
+                let spacer = Span::styled("      ", dialog_text_style);
 
                 // illusion of buttons
                 let buttons = if *choice == 0 {
                     Line::from(vec![
-                        Span::styled("[Confirm]", dialog_button_selected_style.clone()),
+                        Span::styled("[Confirm]", dialog_button_selected_style),
                         spacer,
-                        Span::styled("[Cancel]", dialog_button_unseleted_style.clone()),
+                        Span::styled("[Cancel]", dialog_button_unseleted_style),
                     ])
                 } else {
                     Line::from(vec![
-                        Span::styled("[Confirm]", dialog_button_unseleted_style.clone()),
+                        Span::styled("[Confirm]", dialog_button_unseleted_style),
                         spacer,
-                        Span::styled("[Cancel]", dialog_button_selected_style.clone()),
+                        Span::styled("[Cancel]", dialog_button_selected_style),
                     ])
                 };
 
@@ -814,9 +799,9 @@ impl App {
                 let block = Block::bordered()
                     .title(Span::styled(
                         "Confirm Restore",
-                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                        dialog_text_style.add_modifier(Modifier::BOLD),
                     ))
-                    .style(dialog_style.clone());
+                    .style(dialog_style);
                 let area = popup_area(area, 40, 15);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
                     .wrap(Wrap { trim: false })
@@ -826,11 +811,11 @@ impl App {
                 f.render_widget(dialog, area);
 
                 directions = Line::from(vec![
-                    Span::styled("←→/hl", title_style.clone()),
+                    Span::styled("←→/hl", title_style),
                     Span::styled(" - select, ", Style::default()),
-                    Span::styled("enter", title_style.clone()),
+                    Span::styled("enter", title_style),
                     Span::styled(" - confirm selection, ", Style::default()),
-                    Span::styled("q/esc", title_style.clone()),
+                    Span::styled("q/esc", title_style),
                     Span::styled(" - go back ", Style::default()),
                 ]);
             }
@@ -850,9 +835,9 @@ impl App {
                                 .to_str()
                                 .unwrap(),
                         ),
-                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                        dialog_text_style.add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(" forever?", dialog_text_style.clone()),
+                    Span::styled(" forever?", dialog_text_style),
                 ]);
 
                 // space between buttons
@@ -861,15 +846,15 @@ impl App {
                 // illusion of buttons
                 let buttons = if *choice == 0 {
                     Line::from(vec![
-                        Span::styled("[Confirm]", dialog_button_selected_style.clone()),
+                        Span::styled("[Confirm]", dialog_button_selected_style),
                         spacer,
-                        Span::styled("[Cancel]", dialog_button_unseleted_style.clone()),
+                        Span::styled("[Cancel]", dialog_button_unseleted_style),
                     ])
                 } else {
                     Line::from(vec![
-                        Span::styled("[Confirm]", dialog_button_unseleted_style.clone()),
+                        Span::styled("[Confirm]", dialog_button_unseleted_style),
                         spacer,
-                        Span::styled("[Cancel]", dialog_button_selected_style.clone()),
+                        Span::styled("[Cancel]", dialog_button_selected_style),
                     ])
                 };
 
@@ -878,9 +863,9 @@ impl App {
                 let block = Block::bordered()
                     .title(Span::styled(
                         "Confirm Deletion",
-                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                        dialog_text_style.add_modifier(Modifier::BOLD),
                     ))
-                    .style(dialog_style.clone());
+                    .style(dialog_style);
                 let area = popup_area(area, 40, 15);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
                     .wrap(Wrap { trim: false })
@@ -890,11 +875,11 @@ impl App {
                 f.render_widget(dialog, area);
 
                 directions = Line::from(vec![
-                    Span::styled("←→/hl", title_style.clone()),
+                    Span::styled("←→/hl", title_style),
                     Span::styled(" - select, ", Style::default()),
-                    Span::styled("enter", title_style.clone()),
+                    Span::styled("enter", title_style),
                     Span::styled(" - confirm selection, ", Style::default()),
-                    Span::styled("q/esc", title_style.clone()),
+                    Span::styled("q/esc", title_style),
                     Span::styled(" - go back ", Style::default()),
                 ]);
             }
@@ -903,7 +888,7 @@ impl App {
                 // question in some mixed style
                 let question = Line::from(vec![Span::styled(
                     "This will permanently delete ALL files in the trash bin forever",
-                    dialog_text_style.clone(),
+                    dialog_text_style,
                 )]);
 
                 // space between buttons
@@ -912,15 +897,15 @@ impl App {
                 // illusion of buttons
                 let buttons = if *choice == 0 {
                     Line::from(vec![
-                        Span::styled("[Confirm]", dialog_button_selected_style.clone()),
+                        Span::styled("[Confirm]", dialog_button_selected_style),
                         spacer,
-                        Span::styled("[Cancel]", dialog_button_unseleted_style.clone()),
+                        Span::styled("[Cancel]", dialog_button_unseleted_style),
                     ])
                 } else {
                     Line::from(vec![
-                        Span::styled("[Confirm]", dialog_button_unseleted_style.clone()),
+                        Span::styled("[Confirm]", dialog_button_unseleted_style),
                         spacer,
-                        Span::styled("[Cancel]", dialog_button_selected_style.clone()),
+                        Span::styled("[Cancel]", dialog_button_selected_style),
                     ])
                 };
 
@@ -929,9 +914,9 @@ impl App {
                 let block = Block::bordered()
                     .title(Span::styled(
                         "Confirm Empty Bin",
-                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                        dialog_text_style.add_modifier(Modifier::BOLD),
                     ))
-                    .style(dialog_style.clone());
+                    .style(dialog_style);
                 let area = popup_area(area, 30, 10);
                 let dialog = Paragraph::new(vec![question, Line::from(vec![]), buttons])
                     .wrap(Wrap { trim: false })
@@ -941,11 +926,11 @@ impl App {
                 f.render_widget(dialog, area);
 
                 directions = Line::from(vec![
-                    Span::styled("←→/hl", title_style.clone()),
+                    Span::styled("←→/hl", title_style),
                     Span::styled(" - select, ", Style::default()),
-                    Span::styled("enter", title_style.clone()),
+                    Span::styled("enter", title_style),
                     Span::styled(" - confirm selection, ", Style::default()),
-                    Span::styled("q/esc", title_style.clone()),
+                    Span::styled("q/esc", title_style),
                     Span::styled(" - go back ", Style::default()),
                 ]);
             }
@@ -959,60 +944,60 @@ impl App {
                 let mut choices: Vec<Line> = vec![];
                 // Deletion Date
                 let dd_check_mark = if self.sort_type == SortType::DeletionDate {
-                    Span::styled("[x]", dialog_button_selected_style.clone())
+                    Span::styled("[x]", dialog_button_selected_style)
                 } else {
-                    Span::styled("[ ]", dialog_button_unseleted_style.clone())
+                    Span::styled("[ ]", dialog_button_unseleted_style)
                 };
 
                 let dd_label = if *choice == SortType::DeletionDate {
-                    Span::styled(" Deleted on", dialog_button_selected_style.clone())
+                    Span::styled(" Deleted on", dialog_button_selected_style)
                 } else {
-                    Span::styled(" Deleted on", dialog_button_unseleted_style.clone())
+                    Span::styled(" Deleted on", dialog_button_unseleted_style)
                 };
 
                 choices.push(Line::from(vec![dd_check_mark, dd_label]));
 
                 // Origin
                 let o_check_mark = if self.sort_type == SortType::TrashRoot {
-                    Span::styled("[x]", dialog_button_selected_style.clone())
+                    Span::styled("[x]", dialog_button_selected_style)
                 } else {
-                    Span::styled("[ ]", dialog_button_unseleted_style.clone())
+                    Span::styled("[ ]", dialog_button_unseleted_style)
                 };
 
                 let o_label = if *choice == SortType::TrashRoot {
-                    Span::styled(" Origin    ", dialog_button_selected_style.clone())
+                    Span::styled(" Origin    ", dialog_button_selected_style)
                 } else {
-                    Span::styled(" Origin    ", dialog_button_unseleted_style.clone())
+                    Span::styled(" Origin    ", dialog_button_unseleted_style)
                 };
 
                 choices.push(Line::from(vec![o_check_mark, o_label]));
 
                 // Size
                 let s_check_mark = if self.sort_type == SortType::Size {
-                    Span::styled("[x]", dialog_button_selected_style.clone())
+                    Span::styled("[x]", dialog_button_selected_style)
                 } else {
-                    Span::styled("[ ]", dialog_button_unseleted_style.clone())
+                    Span::styled("[ ]", dialog_button_unseleted_style)
                 };
 
                 let s_label = if *choice == SortType::Size {
-                    Span::styled(" Size      ", dialog_button_selected_style.clone())
+                    Span::styled(" Size      ", dialog_button_selected_style)
                 } else {
-                    Span::styled(" Size      ", dialog_button_unseleted_style.clone())
+                    Span::styled(" Size      ", dialog_button_unseleted_style)
                 };
 
                 choices.push(Line::from(vec![s_check_mark, s_label]));
 
                 // file name
                 let fn_check_mark = if self.sort_type == SortType::FileName {
-                    Span::styled("[x]", dialog_button_selected_style.clone())
+                    Span::styled("[x]", dialog_button_selected_style)
                 } else {
-                    Span::styled("[ ]", dialog_button_unseleted_style.clone())
+                    Span::styled("[ ]", dialog_button_unseleted_style)
                 };
 
                 let fn_label = if *choice == SortType::FileName {
-                    Span::styled(" File Name ", dialog_button_selected_style.clone())
+                    Span::styled(" File Name ", dialog_button_selected_style)
                 } else {
-                    Span::styled(" File Name ", dialog_button_unseleted_style.clone())
+                    Span::styled(" File Name ", dialog_button_unseleted_style)
                 };
 
                 choices.push(Line::from(vec![fn_check_mark, fn_label]));
@@ -1025,9 +1010,9 @@ impl App {
                 let block = Block::bordered()
                     .title(Span::styled(
                         "Sort Files By",
-                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                        dialog_text_style.add_modifier(Modifier::BOLD),
                     ))
-                    .style(dialog_style.clone());
+                    .style(dialog_style);
                 let area = popup_area(area, 30, 15);
                 let dialog = Paragraph::new(dialog_content)
                     .wrap(Wrap { trim: false })
@@ -1037,11 +1022,11 @@ impl App {
                 f.render_widget(dialog, area);
 
                 directions = Line::from(vec![
-                    Span::styled("↓↑/jk", title_style.clone()),
+                    Span::styled("↓↑/jk", title_style),
                     Span::styled(" - select, ", Style::default()),
-                    Span::styled("enter", title_style.clone()),
+                    Span::styled("enter", title_style),
                     Span::styled(" - confirm selection, ", Style::default()),
-                    Span::styled("q/esc", title_style.clone()),
+                    Span::styled("q/esc", title_style),
                     Span::styled(" - go back ", Style::default()),
                 ]);
             }
@@ -1051,16 +1036,16 @@ impl App {
                 let block = Block::bordered()
                     .title(Span::styled(
                         "Keyboard Shortcuts [Case Sensitive]",
-                        dialog_text_style.clone().add_modifier(Modifier::BOLD),
+                        dialog_text_style.add_modifier(Modifier::BOLD),
                     ))
                     .padding(Padding::new(2, 2, 4, 1))
-                    .style(dialog_style.clone());
+                    .style(dialog_style);
                 let area = popup_area(area, 60, 40);
 
                 let empty_line = Line::default();
-                let shortcut_style = dialog_text_style.clone().add_modifier(Modifier::BOLD);
+                let shortcut_style = dialog_text_style.add_modifier(Modifier::BOLD);
                 let dash = Span::from(" - ");
-                let desc_style = dialog_text_style.clone().add_modifier(Modifier::ITALIC);
+                let desc_style = dialog_text_style.add_modifier(Modifier::ITALIC);
 
                 let shortcuts = Paragraph::new(vec![
                     Line::from(vec![
@@ -1147,7 +1132,7 @@ impl App {
                 f.render_widget(shortcuts, area);
 
                 directions = Line::from(vec![
-                    Span::styled("q/esc", title_style.clone()),
+                    Span::styled("q/esc", title_style),
                     Span::styled(" - go back ", Style::default()),
                 ]);
             }
@@ -1156,9 +1141,7 @@ impl App {
         }
 
         // ================== footer
-        let footer_block = Block::default()
-            .borders(Borders::ALL)
-            .style(block_style.clone());
+        let footer_block = Block::default().borders(Borders::ALL).style(block_style);
         let directions_block = Paragraph::new(directions).block(footer_block);
         f.render_widget(directions_block, main_horizontal_blocks[2]);
     }
@@ -1279,7 +1262,7 @@ impl App {
                         // confirm the action if Yes is selected
                         if choice == 0 {
                             let selected_file = &self.trashed_files[self.selected];
-                            let _ = selected_file
+                            selected_file
                                 .delete_forever()
                                 .expect("could not delete file");
                         }
@@ -1312,9 +1295,8 @@ impl App {
                         if choice == 0 {
                             for trash_file in &self.trashed_files {
                                 // one error shouldn't stop operation
-                                match trash_file.delete_forever() {
-                                    Ok(_) => {}
-                                    Err(_) => {} // todo: show an error notification
+                                if trash_file.delete_forever().is_err() {
+                                    // todo: show an error notification
                                 }
                             }
                         }
@@ -1502,7 +1484,7 @@ fn get_trashed_files() -> Result<Vec<TrashFile>, Box<dyn Error>> {
 // root dev_id
 // size largest>smallest
 // filename a-z
-fn sort_file_list(list: &mut Vec<TrashFile>, sort_by: &SortType) {
+fn sort_file_list(list: &mut [TrashFile], sort_by: &SortType) {
     list.sort_by(|a, b| match sort_by {
         SortType::DeletionDate => {
             // sort by deletion date, if equal directories first
