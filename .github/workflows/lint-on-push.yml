@@ -15,5 +15,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: fmt and lint
+        env:
+          TAG_NAME: "test"
         run: |
           cargo fmt -- --check && cargo clippy -- -Dwarnings

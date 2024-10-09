@@ -10,19 +10,31 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      - name: Extract tag name
+        id: vars
+        run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+
       - uses: actions/checkout@v3
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: fmt and lint
+        env:
+          TAG_NAME: ${{ steps.vars.outputs.tag }}
         run: |
           cargo fmt -- --check && cargo clippy -- -Dwarnings
 
   test:
     runs-on: ubuntu-latest
     steps:
+      - name: Extract tag name
+        id: vars
+        run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+
       - uses: actions/checkout@v3
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Run tests
+        env:
+          TAG_NAME: ${{ steps.vars.outputs.tag }}
         run: |
           cargo test # no tests at the moment
 
