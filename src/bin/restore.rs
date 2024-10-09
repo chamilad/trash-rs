@@ -28,7 +28,7 @@ use std::str::from_utf8;
 
 const VERBOSE_MODE: bool = false;
 const BINARY_NAME: &str = "Trash Bin";
-const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
+const BINARY_VERSION: &str = env!("TAG_NAME", "TAG_NAME not defined");
 
 // layout values
 const LAYOUT_FILE_LIST_WIDTH_PERCENTAGE: u16 = 70;
