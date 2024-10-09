@@ -20,11 +20,11 @@ use ratatui::widgets::{
 };
 use ratatui::{restore, Frame, Terminal};
 use std::cmp::Ordering::{Equal, Greater, Less};
+use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::MAIN_SEPARATOR_STR;
 use std::str::from_utf8;
-use std::{env, usize};
 
 const VERBOSE_MODE: bool = false;
 const BINARY_NAME: &str = "Trash Bin";
@@ -145,6 +145,8 @@ impl App {
             )
             .split(f.area());
 
+        let mut directions: Vec<(&str, &str)> = vec![];
+
         // ============================== title
         let title_block = Block::default().borders(Borders::ALL).style(block_style);
 
@@ -153,8 +155,6 @@ impl App {
         let padded_title = format!("{title:<width$}", width = frame_area.width as usize);
         let title = Paragraph::new(Text::styled(padded_title, title_style)).block(title_block);
         f.render_widget(title, main_horizontal_blocks[0]);
-
-        let mut directions: Line = Line::default();
 
         // ================== mid section
         match &self.state {
@@ -737,22 +737,13 @@ impl App {
                 f.render_stateful_widget(scrollbar, midsection_columns[0], &mut scrollbar_state);
 
                 // -------------------- shortcuts
-                directions = Line::from(vec![
-                    Span::styled("h/f1", title_style),
-                    Span::styled(" - help ", Style::default()),
-                    Span::styled("↓↑/jk", title_style),
-                    Span::styled(" - navigate list, ", Style::default()),
-                    Span::styled("enter", title_style),
-                    Span::styled(" - restore, ", Style::default()),
-                    Span::styled("del", title_style),
-                    Span::styled(" - del, ", Style::default()),
-                    Span::styled("shift + del", title_style),
-                    Span::styled(" - empty trash bin, ", Style::default()),
-                    Span::styled("q", title_style),
-                    Span::styled(" - quit, ", Style::default()),
-                    Span::styled("s", title_style),
-                    Span::styled(" - sort", Style::default()),
-                ]);
+                directions.push(("h/f1", "help"));
+                directions.push(("↓↑/jk", "navigate list"));
+                directions.push(("enter", "restore"));
+                directions.push(("del", "del"));
+                directions.push(("shift + del", "empty trash bin"));
+                directions.push(("q", "quit"));
+                directions.push(("s", "sort"));
             }
 
             AppState::RestoreConfirmation(choice) => {
@@ -814,14 +805,9 @@ impl App {
                 f.render_widget(Clear, area);
                 f.render_widget(dialog, area);
 
-                directions = Line::from(vec![
-                    Span::styled("←→/hl", title_style),
-                    Span::styled(" - select, ", Style::default()),
-                    Span::styled("enter", title_style),
-                    Span::styled(" - confirm selection, ", Style::default()),
-                    Span::styled("q/esc", title_style),
-                    Span::styled(" - go back ", Style::default()),
-                ]);
+                directions.push(("←→/hl", "select"));
+                directions.push(("enter", "confirm selection"));
+                directions.push(("q/esc", "go back"));
             }
 
             AppState::DeletionConfirmation(choice) => {
@@ -878,14 +864,9 @@ impl App {
                 f.render_widget(Clear, area);
                 f.render_widget(dialog, area);
 
-                directions = Line::from(vec![
-                    Span::styled("←→/hl", title_style),
-                    Span::styled(" - select, ", Style::default()),
-                    Span::styled("enter", title_style),
-                    Span::styled(" - confirm selection, ", Style::default()),
-                    Span::styled("q/esc", title_style),
-                    Span::styled(" - go back ", Style::default()),
-                ]);
+                directions.push(("←→/hl", "select"));
+                directions.push(("enter", "confirm selection"));
+                directions.push(("q/esc", "go back"));
             }
 
             AppState::EmptyBinConfirmation(choice) => {
@@ -929,14 +910,9 @@ impl App {
                 f.render_widget(Clear, area);
                 f.render_widget(dialog, area);
 
-                directions = Line::from(vec![
-                    Span::styled("←→/hl", title_style),
-                    Span::styled(" - select, ", Style::default()),
-                    Span::styled("enter", title_style),
-                    Span::styled(" - confirm selection, ", Style::default()),
-                    Span::styled("q/esc", title_style),
-                    Span::styled(" - go back ", Style::default()),
-                ]);
+                directions.push(("←→/hl", "select"));
+                directions.push(("enter", "confirm selection"));
+                directions.push(("q/esc", "go back"));
             }
 
             AppState::SortListDialog(choice) => {
@@ -1025,14 +1001,9 @@ impl App {
                 f.render_widget(Clear, area);
                 f.render_widget(dialog, area);
 
-                directions = Line::from(vec![
-                    Span::styled("↓↑/jk", title_style),
-                    Span::styled(" - select, ", Style::default()),
-                    Span::styled("enter", title_style),
-                    Span::styled(" - confirm selection, ", Style::default()),
-                    Span::styled("q/esc", title_style),
-                    Span::styled(" - go back ", Style::default()),
-                ]);
+                directions.push(("←→/hl", "select"));
+                directions.push(("enter", "confirm selection"));
+                directions.push(("q/esc", "go back"));
             }
 
             AppState::HelpScreen => {
@@ -1155,10 +1126,7 @@ impl App {
                 f.render_widget(Clear, area);
                 f.render_widget(shortcuts, area);
 
-                directions = Line::from(vec![
-                    Span::styled("q/esc", title_style),
-                    Span::styled(" - go back ", Style::default()),
-                ]);
+                directions.push(("q/esc", "go back"));
             }
 
             _ => {}
@@ -1166,7 +1134,17 @@ impl App {
 
         // ================== footer
         let footer_block = Block::default().borders(Borders::ALL).style(block_style);
-        let directions_block = Paragraph::new(directions).block(footer_block);
+        let mut directions_line_contents = vec![];
+        let dash = Span::from(" - ");
+        let desc_style = Style::default().add_modifier(Modifier::ITALIC);
+        for (shortcut, desc) in directions.into_iter() {
+            directions_line_contents.push(Span::styled(shortcut, title_style));
+            directions_line_contents.push(dash.clone());
+            directions_line_contents.push(Span::styled(format!(" {desc} "), desc_style));
+        }
+
+        let directions_line = Line::from(directions_line_contents);
+        let directions_block = Paragraph::new(directions_line).block(footer_block);
         f.render_widget(directions_block, main_horizontal_blocks[2]);
     }
 
