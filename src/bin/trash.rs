@@ -4,6 +4,9 @@ use std::io::{stdin, stdout, Write};
 
 use libtrash::*;
 
+const BINARY_NAME: &str = "trash";
+const BINARY_VERSION: &str = env!("TAG_NAME", "TAG_NAME not defined");
+
 const EXITCODE_OK: i32 = 0;
 const EXITCODE_INVALID_ARGS: i32 = 1;
 const EXITCODE_UNSUPPORTED: i32 = 2;
@@ -14,7 +17,7 @@ const EXITCODE_EXTERNAL: i32 = 255;
 fn main() {
     // skip the binary name, and parse rest of the args
     let args: Vec<String> = env::args().skip(1).collect();
-    let args_conf = match parse_args(args) {
+    let args_conf = match Args::parse(args) {
         Ok(v) => v,
         Err(e) => {
             msg_err(format!("{e}"));
@@ -31,7 +34,36 @@ fn main() {
     }
 
     if args_conf.help {
-        println!("help text here todo");
+        println!(
+            r#"
+{BINARY_NAME} version {BINARY_VERSION}
+a freedesktop.org trash spec implementation for the CLI
+
+Usage: {BINARY_NAME} [OPTION]... [FILE]...
+Move the FILE(s) to the trash bin without unlinking
+
+    -h, --help          display this help and exit
+    -i, --interactive   prompt before every move
+    -v, --verbose       explain what is being done
+    -V, --version       output version information and exit
+
+{BINARY_NAME} does not traverse symbolic links. It will only move the link to 
+trash bin, not the target.
+
+To trash a file whose name starts with a '-', for example '-foo',
+use one of these commands:
+  {BINARY_NAME} -- -foo
+
+  {BINARY_NAME} ./-foo
+
+To restore a trashed file, any freedesktop.org trash specificaiton compatible
+tool can be used, including File Explorer in desktop environments like GNOME or
+the TUI released with this project, \"Trash Bin\".
+
+{BINARY_NAME} source code, documentation, and issue tracker is in Github:
+<https://github.com/chamilad/trash-rs>
+"#
+        );
         std::process::exit(EXITCODE_OK);
     }
 
@@ -146,56 +178,6 @@ fn main() {
     }
 }
 
-fn parse_args(args: Vec<String>) -> Result<Args, Box<dyn Error>> {
-    // need at least one arg
-    if args.is_empty() {
-        return Err(Box::<dyn Error>::from("missing operand"));
-    }
-
-    let mut interactive: bool = false;
-    let mut verbose: bool = false;
-    let mut help: bool = false;
-    let mut version: bool = false;
-    let mut file_names: Vec<String> = vec![];
-    let mut eoo = false; // -- is end of options
-    for arg in args {
-        if eoo {
-            file_names.push(arg);
-        } else {
-            match arg.as_str() {
-                "--" => eoo = true,
-                "-i" | "--interactive" => interactive = true,
-                "-v" | "--verbose" => verbose = true,
-                "-h" | "--help" => help = true,
-                "-V" | "--version" => version = true,
-                "-iv" | "-vi" => {
-                    verbose = true;
-                    interactive = true;
-                }
-                _ => {
-                    if arg.starts_with("-") {
-                        return Err(Box::<dyn Error>::from(format!("invalid option -- '{arg}'")));
-                    }
-
-                    file_names.push(arg);
-                }
-            }
-        }
-    }
-
-    if file_names.is_empty() && !(help || version) {
-        return Err(Box::<dyn Error>::from("missing operand"));
-    }
-
-    Ok(Args {
-        interactive,
-        verbose,
-        help,
-        version,
-        file_names,
-    })
-}
-
 #[derive(Debug, Clone)]
 struct Args {
     interactive: bool, // -i, --interactive
@@ -205,6 +187,60 @@ struct Args {
     file_names: Vec<String>,
 }
 
+impl Args {
+    fn parse(args: Vec<String>) -> Result<Self, Box<dyn Error>> {
+        // need at least one arg
+        if args.is_empty() {
+            return Err(Box::<dyn Error>::from("missing operand"));
+        }
+
+        let mut interactive: bool = false;
+        let mut verbose: bool = false;
+        let mut help: bool = false;
+        let mut version: bool = false;
+        let mut file_names: Vec<String> = vec![];
+        let mut eoo = false; // -- is end of options
+        for arg in args {
+            if eoo {
+                file_names.push(arg);
+            } else {
+                match arg.as_str() {
+                    "--" => eoo = true,
+                    "-i" | "--interactive" => interactive = true,
+                    "-v" | "--verbose" => verbose = true,
+                    "-h" | "--help" => help = true,
+                    "-V" | "--version" => version = true,
+                    "-iv" | "-vi" => {
+                        verbose = true;
+                        interactive = true;
+                    }
+                    _ => {
+                        if arg.starts_with("-") {
+                            return Err(Box::<dyn Error>::from(format!(
+                                "invalid option -- '{arg}'"
+                            )));
+                        }
+
+                        file_names.push(arg);
+                    }
+                }
+            }
+        }
+
+        if file_names.is_empty() && !(help || version) {
+            return Err(Box::<dyn Error>::from("missing operand"));
+        }
+
+        Ok(Args {
+            interactive,
+            verbose,
+            help,
+            version,
+            file_names,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,32 +248,32 @@ mod tests {
     #[test]
     fn test_parse_args() {
         let i: Vec<String> = vec![String::from("-iv"), String::from("somefile")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(a.interactive && a.verbose && !a.help && !a.version);
         assert!(a.file_names.len() == 1);
 
         let i: Vec<String> = vec![String::from("-vi"), String::from("somefile")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(a.interactive && a.verbose && !a.help && !a.version);
 
         let i: Vec<String> = vec![String::from("--verbose"), String::from("somefile")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(!a.interactive && a.verbose && !a.help && !a.version);
 
         let i: Vec<String> = vec![String::from("-h")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(!a.interactive && !a.verbose && a.help && !a.version);
 
         let i: Vec<String> = vec![String::from("-V")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(!a.interactive && !a.verbose && !a.help && a.version);
@@ -247,7 +283,7 @@ mod tests {
             String::from("--"),
             String::from("-somefile"),
         ];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(a.interactive && a.verbose && !a.help && !a.version);
@@ -258,7 +294,7 @@ mod tests {
             String::from("-iv"),
             String::from("-somefile"),
         ];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(!a.interactive && !a.verbose && !a.help && !a.version);
@@ -270,7 +306,7 @@ mod tests {
             String::from("--"),
             String::from("-somefile"),
         ];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(!a.interactive && !a.verbose && !a.help && !a.version);
@@ -283,7 +319,7 @@ mod tests {
             String::from("--"),
             String::from("-somefile"),
         ];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_ok());
         let a = args.unwrap();
         assert!(a.interactive && a.verbose && !a.help && !a.version);
@@ -294,28 +330,28 @@ mod tests {
     #[test]
     fn test_parse_args_err() {
         let i: Vec<String> = vec![];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_err());
 
         // need to specify a file if not help or version
         let i: Vec<String> = vec![String::from("-v")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_err());
 
         let i: Vec<String> = vec![String::from("-G")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_err());
 
         // can't use help or version with other flags
         let i: Vec<String> = vec![String::from("-ivh")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_err());
         let i: Vec<String> = vec![String::from("-ivV")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_err());
 
         let i: Vec<String> = vec![String::from("--")];
-        let args = parse_args(i);
+        let args = Args::parse(i);
         assert!(args.is_err());
     }
 }
