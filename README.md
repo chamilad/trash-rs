@@ -126,3 +126,13 @@ indicate an "external mount".
    the future, this could be configurable through a command line argument. This
    default behaviour is decided to be similar to coreutils `rm` behaviour where
    `rm <link>` unlinks the link, and does not delete the target.
+
+## License
+The source code and the release artifacts are licensed under 
+[Apache License v2](https://www.apache.org/licenses/LICENSE-2.0)
+
+## Support and Contributing
+This software is provided with absolutely no promise of support, I'm a beginner
+in Rust, and this was a pet project. Having said that, I'll probably be able to
+tend to any issues that you can report on the "Issues" tab. Pull Requests
+fixing bugs you find are also welcome!!
