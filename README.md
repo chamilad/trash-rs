@@ -91,6 +91,27 @@ restore
 
 ![UI components](./docs/restore-screen-areas.png)
 
+You can sort the file list by,
+1. Deletion Date (default) - latest on top
+1. Original Path
+1. File Size - largest on top
+1. File Name - A-Z
+
+### Themes
+There is limited Dark and Light theme variation in the `restore` UI. It
+defaults to the `DARK` theme, but if you are using a light terminal theme,
+`DARK` colours will not look good. In that case, switch to `LIGHT` theme by
+setting the environment variable `TRASH_RS_THEME` in your shell. Usually, it
+will help if this can be permanently set in your shell configuration script
+like `$HOME/.bashrc` or `$HOME/.zshrc`.
+
+```bash
+export TRASH_RS_THEME=LIGHT
+```
+
+![Restore LIGHT theme on Solarized Light terminal
+colours](./docs/restore-light-theme.png)
+
 ## Highlevel Implementation Details
 The Trash Directories used are defined in the
 [specification](https://specifications.freedesktop.org/trash-spec/latest/#trash-directories).
