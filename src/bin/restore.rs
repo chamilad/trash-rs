@@ -28,6 +28,7 @@ use std::str::from_utf8;
 
 const VERBOSE_MODE: bool = false;
 const BINARY_NAME: &str = "Trash Bin";
+// this env var needs to be present. Use Makefile to build locally
 const BINARY_VERSION: &str = env!("TAG_NAME", "TAG_NAME not defined");
 
 // layout values

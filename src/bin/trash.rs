@@ -5,6 +5,7 @@ use std::io::{stdin, stdout, Write};
 use libtrash::*;
 
 const BINARY_NAME: &str = "trash";
+// this env var needs to be present. Use Makefile to build locally
 const BINARY_VERSION: &str = env!("TAG_NAME", "TAG_NAME not defined");
 
 const EXITCODE_OK: i32 = 0;
